@@ -5,6 +5,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from filters import prefix_to_dxcc
+
 BAND_RANGES = [
     ("160m", 1800, 2000),
     ("80m",  3500, 4000),
@@ -69,6 +71,8 @@ def parse_spot(line: str):
     freq_khz = float(freq_str)
     band = detect_band(freq_khz) or "UNKNOWN"
     mode = detect_mode(comment)
+    dx_dxcc, dx_continent = prefix_to_dxcc(dx_call)
+    spotter_dxcc, spotter_continent = prefix_to_dxcc(spotter)
     return Spot(
         dx_call=dx_call,
         spotter=spotter,
@@ -77,6 +81,10 @@ def parse_spot(line: str):
         mode=mode,
         comment=comment.strip(),
         time_utc=time_utc,
+        dx_dxcc=dx_dxcc,
+        dx_continent=dx_continent,
+        spotter_dxcc=spotter_dxcc,
+        spotter_continent=spotter_continent,
     )
 
 
