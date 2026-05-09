@@ -7,8 +7,9 @@ from matplotlib.ticker import FuncFormatter
 
 from scope_utils import drain_queue, extract_prefix, format_freq  # noqa: F401 (re-exported)
 
-WINDOW_MINUTES = 30
+WINDOW_MINUTES = 10
 HALF_WIDTH_KHZ = 25.0
+_TICK_SPACING_MIN = 2  # X-axis tick every N minutes
 
 
 class BandScope(tk.Frame):
@@ -45,33 +46,43 @@ class BandScope(tk.Frame):
         lo = self._center - HALF_WIDTH_KHZ
         hi = self._center + HALF_WIDTH_KHZ
 
-        ax.set_xlabel("Frequency (kHz)", fontsize=10)
-        ax.set_ylabel("Time (UTC)", fontsize=10)
+        # X axis: T=0 (newest) on LEFT, T=-window on RIGHT — reversed xlim.
+        # Y axis: frequency (kHz), higher freq at top.
+        ax.set_xlabel("min", fontsize=10)
+        ax.set_ylabel("Frequency (kHz)", fontsize=10)
         ax.set_title(
             f"Band Scope  {format_freq(self._center)} ± {HALF_WIDTH_KHZ:.0f} kHz",
             fontsize=11,
         )
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(cutoff, now)
-        ax.yaxis.set_major_formatter(
-            FuncFormatter(lambda v, _: time.strftime("%H:%Mz", time.gmtime(v)))
+        ax.set_xlim(now, cutoff)
+        ax.set_ylim(lo, hi)
+
+        # Elapsed-time ticks: 0, -2, -4 … -WINDOW (captured by value via default arg)
+        tick_times = [now - m * 60
+                      for m in range(0, WINDOW_MINUTES + 1, _TICK_SPACING_MIN)]
+        ax.set_xticks(tick_times)
+        ax.xaxis.set_major_formatter(
+            FuncFormatter(lambda v, _, t=now: f"{int(round((v - t) / 60))}")
         )
         ax.grid(True, alpha=0.3)
 
-        # Center frequency reference line
-        ax.axvline(x=self._center, color="red", linewidth=0.8, alpha=0.5, linestyle="--")
+        # Center-frequency hairline: blue, same visual weight as grid lines
+        ax.axhline(y=self._center, color="steelblue", linewidth=0.8, alpha=0.45)
 
         for ts, spot in self._spots:
             if lo <= spot.freq_khz <= hi and ts >= cutoff:
-                ax.plot(spot.freq_khz, ts, "b^", markersize=9, alpha=0.8,
-                        markeredgecolor="navy", markeredgewidth=0.5)
+                ax.plot(ts, spot.freq_khz,
+                        marker="_", color="navy",
+                        markersize=18, markeredgewidth=2, alpha=0.85,
+                        ls="none")
                 ax.annotate(
                     spot.dx_call,
-                    (spot.freq_khz, ts),
+                    (ts, spot.freq_khz),
                     textcoords="offset points",
-                    xytext=(5, 2),
+                    xytext=(6, 0),
                     fontsize=7,
                     color="navy",
+                    va="center",
                 )
 
         self._canvas.draw()
