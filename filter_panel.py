@@ -173,6 +173,8 @@ class FilterPanel(tk.Toplevel):
 
     def _apply(self):
         self._conn.send_command("UNSET/FILTER")
+        self._conn.send_command("SET/NOFT8")
+        self._conn.send_command("SET/NOFT4")
 
         cmds, parts = [], []
 
