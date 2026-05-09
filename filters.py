@@ -1,5 +1,4 @@
 import time
-from dataclasses import dataclass, field
 
 # Sorted longest-first so UA9 matches before UA
 _PREFIX_TABLE = [
@@ -57,38 +56,6 @@ def prefix_to_dxcc(callsign: str) -> tuple:
         if call.startswith(prefix):
             return dxcc, continent
     return "Unknown", ""
-
-
-@dataclass
-class SpotFilter:
-    bands: list = field(default_factory=list)
-    modes: list = field(default_factory=list)
-    dx_prefixes: list = field(default_factory=list)
-    dx_continents: list = field(default_factory=list)
-    dx_dxcc: list = field(default_factory=list)
-    spotter_prefixes: list = field(default_factory=list)
-    spotter_continents: list = field(default_factory=list)
-    spotter_dxcc: list = field(default_factory=list)
-
-
-def passes(spot, f: SpotFilter) -> bool:
-    if f.bands and spot.band not in f.bands:
-        return False
-    if f.modes and spot.mode not in f.modes:
-        return False
-    if f.dx_prefixes and not any(spot.dx_call.upper().startswith(p.upper()) for p in f.dx_prefixes):
-        return False
-    if f.dx_continents and spot.dx_continent not in f.dx_continents:
-        return False
-    if f.dx_dxcc and spot.dx_dxcc not in f.dx_dxcc:
-        return False
-    if f.spotter_prefixes and not any(spot.spotter.upper().startswith(p.upper()) for p in f.spotter_prefixes):
-        return False
-    if f.spotter_continents and spot.spotter_continent not in f.spotter_continents:
-        return False
-    if f.spotter_dxcc and spot.spotter_dxcc not in f.spotter_dxcc:
-        return False
-    return True
 
 
 class DedupCache:

@@ -3,7 +3,7 @@ import re
 import socket
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from filters import prefix_to_dxcc
 
@@ -21,8 +21,39 @@ BAND_RANGES = [
     ("6m",  50000, 54000),
 ]
 
+@dataclass
+class ClusterFilter:
+    modes: list = field(default_factory=list)            # e.g. ["CW"]
+    bands: list = field(default_factory=list)            # e.g. ["20m", "40m"]; empty = all HF
+    dx_continents: list = field(default_factory=list)    # e.g. ["EU", "AS"]
+    spotter_continents: list = field(default_factory=list)  # e.g. ["NA"]
+
+
+# CC Cluster (VE7CC) uses SET/NO* commands to disable spot types.
+# Verified against ve7cc.net CC Cluster 3.x: SET/NOFT8, SET/NOFT4, SET/NOCW.
+# Band and continent server-side filtering not yet confirmed — add here once tested.
+_MODE_DISABLE_CMDS = {
+    "FT8":  "SET/NOFT8",
+    "FT4":  "SET/NOFT4",
+    "CW":   "SET/NOCW",
+    "RTTY": "SET/NORTTY",
+    "SSB":  "SET/NOSSB",
+}
+
+
+def to_cc_commands(f: ClusterFilter) -> list:
+    cmds = []
+    if f.modes:
+        wanted = {m.upper() for m in f.modes}
+        for mode, cmd in _MODE_DISABLE_CMDS.items():
+            if mode not in wanted:
+                cmds.append(cmd)
+    # Band and continent filtering: CC Cluster commands TBD pending live testing.
+    return cmds
+
+
 _SPOT_RE = re.compile(
-    r"DX de (\S+?):\s+([\d.]+)\s+(\S+)\s+(.*?)\s+(\d{4}Z)\s*$"
+    r"DX de (\S+?):\s+([\d.]+)\s+(\S+)\s+(.*)\s+(\d{4}Z)"
 )
 
 
@@ -89,11 +120,13 @@ def parse_spot(line: str):
 
 
 class ClusterConnection:
-    def __init__(self, host: str, port: int, callsign: str, spot_queue: queue.Queue):
+    def __init__(self, host: str, port: int, callsign: str, spot_queue: queue.Queue,
+                 cluster_filter: ClusterFilter = None):
         self._host = host
         self._port = port
         self._callsign = callsign
         self._queue = spot_queue
+        self._filter = cluster_filter or ClusterFilter()
         self._stop_event = threading.Event()
         self._thread = None
 
@@ -116,6 +149,13 @@ class ClusterConnection:
                 sock.connect((self._host, self._port))
                 sock.settimeout(None)
                 backoff = 5
+                sock.sendall((self._callsign + "\r\n").encode())
+                self._stop_event.wait(2)
+                sock.sendall(b"SET/SKIMMER\r\n")
+                self._stop_event.wait(0.5)
+                for cmd in to_cc_commands(self._filter):
+                    sock.sendall((cmd + "\r\n").encode())
+                    self._stop_event.wait(0.3)
                 fh = sock.makefile("r", errors="replace")
                 for line in fh:
                     if self._stop_event.is_set():

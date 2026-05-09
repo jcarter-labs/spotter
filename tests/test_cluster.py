@@ -2,7 +2,7 @@ import queue
 import unittest
 from unittest.mock import MagicMock, patch
 
-from cluster import ClusterConnection, detect_band, detect_mode, parse_spot
+from cluster import ClusterConnection, ClusterFilter, detect_band, detect_mode, parse_spot, to_cc_commands
 
 
 class TestParseValidSpot(unittest.TestCase):
@@ -83,14 +83,14 @@ class TestQueuePopulated(unittest.TestCase):
         spot_line = b"DX de W1AW:      14025.0  UA9MA        CW 599                         1234Z\r\n"
         mock_sock.recv.side_effect = [spot_line, b""]
         mock_sock.makefile.return_value.__iter__ = lambda s: iter([
-            "DX de W1AW:      14025.0  UA9MA        CW 599                         1234Z"
+            "DX de W1AW-#:    14025.0  UA9MA        CW 599                         1234Z"
         ])
 
         q = queue.Queue()
         conn = ClusterConnection("dx.example.com", 7300, "W1AW", q)
         conn.start()
         try:
-            spot = q.get(timeout=1.0)
+            spot = q.get(timeout=3.0)
             self.assertEqual(spot.dx_call, "UA9MA")
         finally:
             conn.stop()
@@ -126,6 +126,35 @@ class TestThreadStopsCleanly(unittest.TestCase):
         conn.start()
         conn.stop()
         self.assertFalse(conn._thread.is_alive())
+
+
+class TestToCcCommands(unittest.TestCase):
+    def test_empty_filter_no_commands(self):
+        self.assertEqual(to_cc_commands(ClusterFilter()), [])
+
+    def test_cw_only_disables_other_modes(self):
+        cmds = to_cc_commands(ClusterFilter(modes=["CW"]))
+        self.assertIn("SET/NOFT8", cmds)
+        self.assertIn("SET/NOFT4", cmds)
+        self.assertNotIn("SET/NOCW", cmds)
+
+    def test_ft8_only_disables_cw_and_ft4(self):
+        cmds = to_cc_commands(ClusterFilter(modes=["FT8"]))
+        self.assertIn("SET/NOCW", cmds)
+        self.assertIn("SET/NOFT4", cmds)
+        self.assertNotIn("SET/NOFT8", cmds)
+
+    def test_cw_and_ft8_disables_ft4(self):
+        cmds = to_cc_commands(ClusterFilter(modes=["CW", "FT8"]))
+        self.assertIn("SET/NOFT4", cmds)
+        self.assertNotIn("SET/NOCW", cmds)
+        self.assertNotIn("SET/NOFT8", cmds)
+
+    def test_band_filter_produces_no_extra_commands(self):
+        # Band filtering not yet confirmed for CC Cluster — only mode cmds generated
+        cmds_mode_only = to_cc_commands(ClusterFilter(modes=["CW"]))
+        cmds_with_band = to_cc_commands(ClusterFilter(modes=["CW"], bands=["20m"]))
+        self.assertEqual(cmds_mode_only, cmds_with_band)
 
 
 if __name__ == "__main__":

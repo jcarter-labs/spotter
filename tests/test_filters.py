@@ -2,7 +2,7 @@ import time
 import unittest
 
 from cluster import Spot
-from filters import DedupCache, SpotFilter, passes, prefix_to_dxcc
+from filters import DedupCache, prefix_to_dxcc
 
 
 def make_spot(**kwargs):
@@ -14,83 +14,6 @@ def make_spot(**kwargs):
     )
     defaults.update(kwargs)
     return Spot(**defaults)
-
-
-class TestBandFilter(unittest.TestCase):
-    def test_accepts_matching_band(self):
-        f = SpotFilter(bands=["20m"])
-        self.assertTrue(passes(make_spot(band="20m"), f))
-
-    def test_rejects_other_band(self):
-        f = SpotFilter(bands=["20m"])
-        self.assertFalse(passes(make_spot(band="40m"), f))
-
-
-class TestModeFilter(unittest.TestCase):
-    def test_accepts_matching_mode(self):
-        f = SpotFilter(modes=["CW", "FT8"])
-        self.assertTrue(passes(make_spot(mode="CW"), f))
-
-    def test_rejects_other_mode(self):
-        f = SpotFilter(modes=["CW", "FT8"])
-        self.assertFalse(passes(make_spot(mode="SSB"), f))
-
-
-class TestDxPrefixFilter(unittest.TestCase):
-    def test_accepts_matching_prefix(self):
-        f = SpotFilter(dx_prefixes=["UA"])
-        self.assertTrue(passes(make_spot(dx_call="UA9MA"), f))
-
-    def test_rejects_other_prefix(self):
-        f = SpotFilter(dx_prefixes=["UA"])
-        self.assertFalse(passes(make_spot(dx_call="W1AW"), f))
-
-
-class TestDxContinentFilter(unittest.TestCase):
-    def test_accepts_matching_continent(self):
-        f = SpotFilter(dx_continents=["EU"])
-        self.assertTrue(passes(make_spot(dx_continent="EU"), f))
-
-    def test_rejects_other_continent(self):
-        f = SpotFilter(dx_continents=["EU"])
-        self.assertFalse(passes(make_spot(dx_continent="NA"), f))
-
-
-class TestDxDxccFilter(unittest.TestCase):
-    def test_accepts_matching_dxcc(self):
-        f = SpotFilter(dx_dxcc=["Russia"])
-        self.assertTrue(passes(make_spot(dx_dxcc="Russia"), f))
-
-    def test_rejects_other_dxcc(self):
-        f = SpotFilter(dx_dxcc=["Russia"])
-        self.assertFalse(passes(make_spot(dx_dxcc="United States"), f))
-
-
-class TestSpotterPrefixFilter(unittest.TestCase):
-    def test_accepts_matching_spotter(self):
-        f = SpotFilter(spotter_prefixes=["W"])
-        self.assertTrue(passes(make_spot(spotter="W1AW"), f))
-
-    def test_rejects_other_spotter(self):
-        f = SpotFilter(spotter_prefixes=["W"])
-        self.assertFalse(passes(make_spot(spotter="VE7CC"), f))
-
-
-class TestCombinedFilters(unittest.TestCase):
-    def test_all_must_pass(self):
-        f = SpotFilter(bands=["20m"], modes=["CW"], dx_continents=["AS"])
-        self.assertTrue(passes(make_spot(band="20m", mode="CW", dx_continent="AS"), f))
-
-    def test_one_fails_rejects(self):
-        f = SpotFilter(bands=["20m"], modes=["CW"], dx_continents=["AS"])
-        self.assertFalse(passes(make_spot(band="20m", mode="SSB", dx_continent="AS"), f))
-
-
-class TestNoFilters(unittest.TestCase):
-    def test_empty_filter_passes_all(self):
-        f = SpotFilter()
-        self.assertTrue(passes(make_spot(), f))
-        self.assertTrue(passes(make_spot(band="160m", mode="RTTY", dx_continent="AF"), f))
 
 
 class TestDedupWithinWindow(unittest.TestCase):

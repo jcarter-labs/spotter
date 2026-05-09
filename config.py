@@ -3,8 +3,8 @@ import json
 import os
 
 DEFAULTS = {
-    "host": "dxc.k3lr.com",
-    "port": 7373,
+    "host": "ve7cc.net",
+    "port": 23,
     "callsign": "",
     "dedup_minutes": 10,
     "last_band": "20m",
