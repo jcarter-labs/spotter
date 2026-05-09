@@ -2,29 +2,34 @@ import copy
 import json
 import os
 
+DEFAULT_PATH = os.path.expanduser("~/.config/spotter/config.json")
+
 DEFAULTS = {
     "host": "ve7cc.net",
     "port": 23,
-    "callsign": "",
+    "callsign": "N6YU",
     "dedup_minutes": 10,
+    "center_khz": 14025.0,
     "last_band": "20m",
     "filter": {
+        "modes": ["CW"],
         "bands": [],
-        "modes": [],
-        "dx_prefixes": [],
         "dx_continents": [],
-        "dx_dxcc": [],
-        "spotter_prefixes": [],
         "spotter_continents": [],
-        "spotter_dxcc": [],
     },
 }
 
 
 class Config:
-    def __init__(self, path: str):
+    def __init__(self, path: str = DEFAULT_PATH):
         self._path = path
         self.data = {}
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def set(self, key, value):
+        self.data[key] = value
 
     def load(self):
         self.data = copy.deepcopy(DEFAULTS)
