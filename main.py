@@ -3,19 +3,21 @@ import tkinter as tk
 from tkinter import ttk
 
 from bandscope import BandScope
-from scope_utils import drain_queue
 from cluster import ClusterConnection, ClusterFilter
 from config import Config
 from filters import DedupCache
+from scope_utils import drain_queue
 
 POLL_MS = 200
+BW_OPTIONS = ["10", "20", "50", "100"]   # kHz, full span
+DEDUP_OPTIONS = ["1", "10", "30"]        # minutes
 
 
 class SpotterApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("DX Spotter")
-        self.geometry("1000x680")
+        self.geometry("1000x720")
         self.resizable(True, True)
 
         self._config = Config()
@@ -32,20 +34,43 @@ class SpotterApp(tk.Tk):
         ctrl = tk.Frame(self, pady=4)
         ctrl.pack(side=tk.TOP, fill=tk.X, padx=8)
 
+        # Center frequency
         tk.Label(ctrl, text="Center kHz:").pack(side=tk.LEFT)
         self._center_var = tk.StringVar(value=str(self._config.get("center_khz", 14025.0)))
-        entry = ttk.Entry(ctrl, textvariable=self._center_var, width=10)
-        entry.pack(side=tk.LEFT, padx=4)
-        entry.bind("<Return>", lambda _: self._on_set_center())
-        ttk.Button(ctrl, text="Set", command=self._on_set_center).pack(side=tk.LEFT)
+        centry = ttk.Entry(ctrl, textvariable=self._center_var, width=9)
+        centry.pack(side=tk.LEFT, padx=(2, 0))
+        centry.bind("<Return>", lambda _: self._on_set_center())
+        ttk.Button(ctrl, text="Set", command=self._on_set_center).pack(side=tk.LEFT, padx=(2, 10))
 
+        # Bandwidth
+        tk.Label(ctrl, text="BW kHz:").pack(side=tk.LEFT)
+        saved_bw = str(int(self._config.get("bandwidth_khz", 50)))
+        if saved_bw not in BW_OPTIONS:
+            saved_bw = "50"
+        self._bw_var = tk.StringVar(value=saved_bw)
+        bw_box = ttk.Combobox(ctrl, textvariable=self._bw_var,
+                               values=BW_OPTIONS, width=5, state="readonly")
+        bw_box.pack(side=tk.LEFT, padx=(2, 10))
+        bw_box.bind("<<ComboboxSelected>>", lambda _: self._on_set_bandwidth())
+
+        # Dedup window
+        tk.Label(ctrl, text="Dedup min:").pack(side=tk.LEFT)
+        self._dedup_var = tk.StringVar(value=str(self._config.get("dedup_minutes", 10)))
+        dedup_box = ttk.Combobox(ctrl, textvariable=self._dedup_var,
+                                  values=DEDUP_OPTIONS, width=4)
+        dedup_box.pack(side=tk.LEFT, padx=(2, 0))
+        dedup_box.bind("<Return>", lambda _: self._on_set_dedup())
+        dedup_box.bind("<<ComboboxSelected>>", lambda _: self._on_set_dedup())
+        ttk.Button(ctrl, text="Set", command=self._on_set_dedup).pack(side=tk.LEFT, padx=(2, 10))
+
+        # Status (right-aligned)
         self._status_var = tk.StringVar(value="Connecting…")
-        tk.Label(ctrl, textvariable=self._status_var, fg="gray", anchor="e").pack(
-            side=tk.RIGHT, padx=8
-        )
+        tk.Label(ctrl, textvariable=self._status_var, fg="gray").pack(side=tk.RIGHT, padx=8)
 
+        # Band scope
         center = float(self._config.get("center_khz", 14025.0))
-        self._scope = BandScope(self, center_khz=center, bg="white")
+        bw = float(self._config.get("bandwidth_khz", 50.0))
+        self._scope = BandScope(self, center_khz=center, bandwidth_khz=bw, bg="white")
         self._scope.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
     def _connect(self):
@@ -73,6 +98,26 @@ class SpotterApp(tk.Tk):
             freq = float(self._center_var.get())
             self._scope.set_center(freq)
             self._config.set("center_khz", freq)
+            self._config.save()
+        except ValueError:
+            pass
+
+    def _on_set_bandwidth(self):
+        try:
+            bw = float(self._bw_var.get())
+            self._scope.set_bandwidth(bw)
+            self._config.set("bandwidth_khz", bw)
+            self._config.save()
+        except ValueError:
+            pass
+
+    def _on_set_dedup(self):
+        try:
+            minutes = int(self._dedup_var.get())
+            if minutes < 1:
+                return
+            self._dedup = DedupCache(window_minutes=minutes)
+            self._config.set("dedup_minutes", minutes)
             self._config.save()
         except ValueError:
             pass
