@@ -152,6 +152,19 @@ SH/FILTER confirms: `DX CTY Filter/All set to Pass: JA`
 `UNSET/FILTER` — clears all user filters. The cluster keeps its own
 default reject for VHF (2m, 70cm, MW) regardless.
 
+### State filter — DXSTATE (DX station state) and DOS (spotter state)
+
+Both verified — multi-state comma lists work. Two equivalent syntaxes:
+
+| Goal | Command |
+|---|---|
+| DX in California | `SET/FILTER DXSTATE/PASS CA` or `SET/FILTER DXSTATE CA` |
+| DX in CA, OR, WA | `SET/FILTER DXSTATE/PASS CA,OR,WA` |
+| Spotters in California | `SET/FILTER DOS/PASS CA` or `SET/FILTER DOS CA` |
+| Spotters in CA, OR, WA | `SET/FILTER DOS/PASS CA,OR,WA` |
+
+SH/FILTER confirms: `DX State Filter/All set to Pass: CA,OR,WA`
+
 ### What does NOT work (confirmed via probe)
 
 | Command tried | Result |
@@ -162,12 +175,22 @@ default reject for VHF (2m, 70cm, MW) regardless.
 | `SET/BAND 20`, `SET/NOBAND 40` | "command error" |
 | `CLEAR/SPOTS ALL` | Silently ignored |
 | `W` as country prefix for USA | "Invalid standard country prefix" |
+| `SET/DXSTATE CA`, `SET/DOS CA` | "command error" (needs `SET/FILTER` prefix) |
+| `SET/FILTER DX_STATE/PASS CA` | "Invalid filter name" |
+| `SET/FILTER DOCSTATE/PASS CA` | "Invalid filter name" |
 
-### US call district filtering
+### US call district vs state — important distinction
 
-NOT possible via CC Cluster. All US stations map to `K` in CTY.DAT
-regardless of call district (W1, W6, K7, etc.). Remove district
-checkboxes from filter panel — replace with country-level selectors.
+**Call district filtering (W1, W2, W6…):** not a native CC Cluster capability.
+Call districts are not geographic entities in CTY.DAT and are only heuristically
+derivable from callsigns. The cluster does not expose a district filter.
+
+**State filtering (CA, TX, OR…):** fully supported server-side via `DXSTATE` and
+`DOS`. The cluster already computes and stores state metadata internally, as
+confirmed by the `SH/FILTER` fields `DX State` and `DX Spot Orig State`.
+
+Filter panel implication: replace the W1–W0 district checkboxes with a US state
+selector using two-letter postal codes (CA, TX, OR, WA, etc.).
 
 ### Diagnostic commands
 
