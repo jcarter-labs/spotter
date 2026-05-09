@@ -68,10 +68,6 @@ class BandScope(tk.Frame):
         )
         ax.grid(True, alpha=0.3)
 
-        # Small unlabeled tick on the left axis at center frequency
-        ax.axhline(y=self._center, xmin=0, xmax=0.012,
-                   color="steelblue", linewidth=2.0, alpha=0.85)
-
         for ts, spot in self._spots:
             if lo <= spot.freq_khz <= hi and ts >= cutoff:
                 ax.plot(ts, spot.freq_khz,
@@ -82,7 +78,7 @@ class BandScope(tk.Frame):
                     spot.dx_call,
                     (ts, spot.freq_khz),
                     textcoords="offset points",
-                    xytext=(5, 0),
+                    xytext=(5, 3),
                     fontsize=7,
                     color="navy",
                     va="center",
