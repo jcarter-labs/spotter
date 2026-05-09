@@ -1,119 +1,165 @@
 # DX Spotter
 
-A DX cluster spot monitor for macOS. Connects to a single DX cluster via
-Telnet, displays incoming spots in a filterable list, and plots activity
-on a graphical band scope. Clicking a spot tunes the KX3 via CAT and
-copies the callsign to the clipboard.
+CW-only DX cluster spot monitor for macOS. Connects to a DX cluster via
+telnet, plots incoming spots on a scrolling band scope, and lets you filter
+spots by band, spotter country, and DX country at the server.
+
+## Features
+
+- Scrolling band scope — center freq ± configurable kHz, 10-min window
+- Server-side CW filtering (`SET/NOFT8`, `SET/NOFT4`) — no FT8 clutter
+- Server-side band and country filters via CC Cluster `SET/FILTER` commands
+- Adjustable bandwidth (10 / 20 / 50 / 100 kHz) and dedup window (1 / 10 / 30 min)
+- Filter panel with `SH/FILTER` server status readout and Reset (test mode)
+- Settings persist across sessions in `~/.config/spotter/config.json`
 
 ---
 
-## Requirements
-
-- macOS
-- Python 3
-- pyserial (`pip install pyserial`)
-- matplotlib (`pip install matplotlib`)
-- Elecraft KX3 connected via USB (optional — for CAT tuning)
-
----
-
-## Setup
+## Installation
 
 ```bash
 git clone git@github.com:jcarter-labs/spotter.git
 cd spotter
 python3 -m venv .venv
 source .venv/bin/activate
-pip install pyserial matplotlib
+pip install matplotlib
+brew install python-tk@3.13   # if tkinter is missing
 ```
+
+> **Python version:** use `.venv/bin/python` (Homebrew Python 3.13 + Tk 9.0).
+> The macOS system Python 3.9 links against Tk 8.5 which crashes on macOS 26.
 
 ---
 
-## Run
+## Usage
 
 ```bash
-source .venv/bin/activate
-python main.py
+cd /Users/jc/code/spotter && .venv/bin/python main.py
 ```
 
-Cluster address and port are read from `~/.config/spotter/config.json`.
-Default cluster is set at first launch. KX3 is auto-detected on
-`/dev/cu.usbserial-*` — if not present, clipboard copy still works.
+Controls in the main window:
+
+| Control | What it does |
+|---|---|
+| Center kHz + Set | Recenters the band scope |
+| BW kHz | Bandwidth: 10 / 20 / 50 / 100 kHz full span |
+| Dedup min | Suppress repeated callsign+band for N minutes |
+| Filters… | Opens the cluster filter settings panel |
 
 ---
 
-## Calling Diagram
+## Python Scripts
 
+| File | Purpose | Run directly? |
+|---|---|---|
+| `main.py` | App entry point — main window, controls, poll loop | `cd /Users/jc/code/spotter && .venv/bin/python main.py` |
+| `cluster.py` | Telnet connection, spot parser, `send_command()` | No — imported |
+| `cluster_debug.py` | CC Cluster diagnostic tool (handshake / interactive / probe) | Yes — see below |
+| `live_test.py` | 60-second live spot stream to stdout with optional filters | Yes — see below |
+| `bandscope.py` | matplotlib band scope widget (`tk.Frame`) | No — imported |
+| `filter_panel.py` | Cluster filter settings window (`tk.Toplevel`) | No — imported |
+| `filters.py` | `DedupCache`, `prefix_to_dxcc` lookup table | No — imported |
+| `config.py` | JSON config load/save | No — imported |
+| `scope_utils.py` | Pure helpers: `format_freq`, `extract_prefix`, `drain_queue` | No — imported |
+| `tests/test_cluster.py` | Unit tests: cluster, parser, filter commands | Via test runner |
+| `tests/test_filters.py` | Unit tests: dedup, prefix lookup | Via test runner |
+| `tests/test_config.py` | Unit tests: config load/save | Via test runner |
+| `tests/test_ui.py` | Unit tests: scope_utils helpers | Via test runner |
+
+### cluster_debug.py
+
+```bash
+.venv/bin/python cluster_debug.py                  # raw login handshake
+.venv/bin/python cluster_debug.py --interactive    # interactive command shell
+.venv/bin/python cluster_debug.py --probe          # automated filter syntax probe
 ```
-main.py
-├── Config()                   [config.py]
-│     └── ~/.config/spotter/config.json  [filesystem]
-│
-├── queue.Queue()              [stdlib]
-│
-├── ClusterConnection(host, port, callsign, queue)  [cluster.py]
-│     └── start()
-│           └── _read_loop()       [daemon thread]
-│                 ├── socket.socket()    [stdlib / DX cluster server]
-│                 ├── _reconnect()       [exponential backoff]
-│                 └── parse_spot()
-│                       ├── detect_band()
-│                       ├── detect_mode()
-│                       └── prefix_to_dxcc()  [filters.py]
-│                             └── queue.put()
-│
-├── SpotFilter()               [filters.py]
-│     └── passes(spot)
-│           └── DedupCache.is_dup()
-│
-└── MainWindow()               [ui.py]
-      ├── _poll_spots()            [via tkinter after() loop]
-      │     ├── queue.get_nowait()
-      │     ├── SpotFilter.passes()
-      │     ├── Treeview.insert()
-      │     └── BandScope.update()     [bandscope.py]
-      │           └── FigureCanvasTkAgg  [matplotlib - external]
-      │
-      ├── _on_spot_click()
-      │     ├── RigController (CAT → KX3)  [kx3_logger/rig.py - optional]
-      │     └── clipboard copy
-      │
-      ├── _on_filter_change()
-      │     └── SpotFilter rebuild
-      │
-      └── mainloop()               [tkinter - external]
 
-On window close:
-  ├── ClusterConnection.stop()
-  └── Config.save()
+### live_test.py
+
+```bash
+.venv/bin/python live_test.py                      # all CW spots, 60 seconds
+.venv/bin/python live_test.py --band 20m           # 20m only
+.venv/bin/python live_test.py --mode ""            # no mode filter (FT8 included)
+.venv/bin/python live_test.py --duration 30        # shorter run
 ```
 
 ---
 
-## Filtering
+## Key Classes and Functions
 
-Spots can be filtered by any combination of:
-- **Band** — 160m through 6m
-- **Mode** — CW, SSB, FT8, FT4, RTTY
-- **DX prefix** — e.g. UA, JA, VK
-- **DX continent** — NA, SA, EU, AF, AS, OC
-- **DX DXCC entity** — e.g. Russia, Japan
-- **Spotter prefix / continent**
+### `cluster.py`
 
-Deduplication suppresses repeated spots for the same callsign+band
-within a configurable time window (default 10 minutes).
+**`ClusterConnection(host, port, callsign, spot_queue, cluster_filter, text_queue)`**
+Manages the telnet connection in a daemon thread. Parsed `Spot` objects go to
+`spot_queue`; raw non-spot cluster text (e.g. `SH/FILTER` responses) goes to
+`text_queue`.
+
+- `start()` / `stop()` — start or cleanly stop the reader thread
+- `send_command(cmd)` — thread-safe; sends a raw CC Cluster command from any thread
+
+**`ClusterFilter`** — dataclass: `modes`, `bands`, `dx_continents`, `spotter_continents`.
+Translated to `SET/NOFT8` / `SET/NOFT4` commands at connect time via `to_cc_commands()`.
+
+**`parse_spot(line)`** — parses a raw `DX de …` line into a `Spot` dataclass or `None`.
+
+### `bandscope.py`
+
+**`BandScope(parent, center_khz, bandwidth_khz)`** — `tk.Frame` with an embedded
+matplotlib figure. Displays spots as dash markers on a scrolling elapsed-time vs.
+frequency plot (T=0 at left, T=−10min at right).
+
+- `set_center(freq_khz)` — recenters the scope
+- `set_bandwidth(bandwidth_khz)` — changes the frequency span
+- `add_spots(spots)` — appends new spots and redraws
+
+### `filter_panel.py`
+
+**`FilterPanel(parent, conn, on_status_change)`** — `tk.Toplevel` with:
+- Left pane: spotter / DX location checkboxes; Apply sends `SET/FILTER` commands
+- Right pane: raw `SH/FILTER` server response; Refresh re-queries; Reset clears all
+
+### `filters.py`
+
+**`DedupCache(window_minutes)`** — suppresses repeated `(callsign, band)` pairs within the window.
+**`prefix_to_dxcc(callsign)`** — returns `(dxcc_name, continent)` from a built-in prefix table.
+
+### `config.py`
+
+**`Config(path)`** — JSON config with `get(key)` / `set(key, value)` / `load()` / `save()`.
+Defaults: `host`, `port`, `callsign`, `center_khz`, `bandwidth_khz`, `dedup_minutes`.
 
 ---
 
-## Project Status
+## Development Notes
 
-- [x] Stage 1 — Cluster connection and spot parser (`cluster.py`) — not started
-- [ ] Stage 2 — Filter engine and config (`filters.py`, `config.py`) — not started
-- [ ] Stage 3 — UI, band scope, KX3 integration — not started
+### Run tests
 
----
+```bash
+cd /Users/jc/code/spotter && .venv/bin/python -m unittest discover -v tests/
+```
 
-## Out of Scope
+47 tests, all passing.
 
-Multiple cluster connections, ADIF export, contest scoring, dupe checking
-beyond time window, DX awards tracking, spot audio alerts.
+### Config file
+
+`~/.config/spotter/config.json` — created on first run with defaults. Delete to reset.
+
+### Verified CC Cluster filter commands (ve7cc.net)
+
+```
+SET/FILTER DXBM/REJECT 160,80,40,30,17,15,12,10,6   # 20m only
+SET/FILTER DOC/PASS K,VE                              # US + Canada spotters only
+SET/FILTER DXCTY/PASS JA                              # DX in Japan only
+UNSET/FILTER                                          # clear all location/band filters
+```
+
+Country prefixes use CTY.DAT notation: USA = `K` (not `W`), Canada = `VE`.
+US call districts (W1–W0) cannot be filtered at the cluster — all map to `K`.
+
+### Debugging
+
+```bash
+.venv/bin/python cluster_debug.py --interactive   # type commands, see raw responses
+```
+
+Type `SH/FILTER` in the interactive shell to see current server-side filter state.
