@@ -1,36 +1,45 @@
-"""Filter settings panel — Approach 1: structured checklist.
+"""Cluster filter settings panel.
 
-Layout: left pane = Spotter/DX location checkboxes + Apply/Reset buttons.
-        right pane = raw SH/FILTER server response + Refresh/Reset buttons.
+All commands verified live against ve7cc.net CC Cluster 3.397.
 
-ACCEPT/SPOTS location commands (by_continent, by_prefix, call_continent,
-call_prefix) are sent to CC Cluster but require live verification — the server
-may silently ignore unknown syntax. SH/FILTER response in the right pane
-confirms what actually took effect.
+Spotter location:
+  SET/FILTER DOC/PASS K,VE          — country (CTY.DAT prefix, USA=K not W)
+  SET/FILTER DOS/PASS CA,OR,WA      — US state (two-letter postal code)
+
+DX location:
+  SET/FILTER DXCTY/PASS JA          — country (CTY.DAT prefix)
+  SET/FILTER DXSTATE/PASS CA        — US state
+
+Band (reject all except selected):
+  SET/FILTER DXBM/REJECT 80,40,...  — reject listed bands; rest pass through
+
+Reset:
+  UNSET/FILTER                       — clear all user location/band filters
+  SET/FT8 + SET/FT4                 — re-enable digital (test mode only)
+
+Note: call districts (W1/W6...) are not filterable at CC Cluster.
+      State filtering (CA/OR/WA...) is the finest US granularity available.
 """
 
 import tkinter as tk
 from tkinter import ttk
 
-CONTINENTS   = ["NA", "SA", "EU", "AF", "AS", "OC"]
-NA_DISTRICTS = ["W1", "W2", "W3", "W4", "W5", "W6",
-                "W7", "W8", "W9", "W0", "VE", "XE"]
-DX_PREFIXES  = ["JA", "BY", "VK", "ZL", "UA", "RA",
-                "DL", "G",  "F",  "I",  "PY", "LU", "ZS", "VU", "HL"]
+# Bands shown in panel. All checked = no band filter sent.
+PANEL_BANDS = ["80", "40", "30", "20", "17", "15", "10"]
 
-# Commands sent by Reset to clear everything and re-enable all spot types.
-_RESET_CMDS = ["CLEAR/SPOTS ALL", "SET/FT8", "SET/FT4", "SET/CW"]
+# Continent → curated CTY.DAT prefix lists (major entities only)
+_CTY = {
+    "NA": "K,VE,XE",
+    "EU": "G,F,I,DL,SP,EA,OH,SM,LA,OZ,PA,ON,HB9,OE,OK,OM,HA,YO,LZ,SV,YU,9A,S5,UR,LY,YL,ES",
+    "AS": "JA,BY,HL,VU,JT,UA9,UA0,9M2,BV",
+    "SA": "PY,LU,CE,OA,CP,CX,HK,YV,HC,ZP",
+    "AF": "ZS,5H,9J,ZE,CN,6W,TZ,ST2",
+    "OC": "VK,ZL,T8,KH6",
+}
 
-
-def _checkbox_grid(parent, labels, ncols=6):
-    """Build a grid of checkboxes; return {label: BooleanVar}."""
-    vars_ = {}
-    for i, label in enumerate(labels):
-        v = tk.BooleanVar()
-        ttk.Checkbutton(parent, text=label, variable=v).grid(
-            row=i // ncols, column=i % ncols, padx=3, sticky="w")
-        vars_[label] = v
-    return vars_
+# W6/W7 state presets (useful for local-spotter band scope)
+_W6 = "CA,NV,AZ"
+_W7 = "OR,WA,ID,MT,WY,UT"
 
 
 class FilterPanel(tk.Toplevel):
@@ -38,22 +47,22 @@ class FilterPanel(tk.Toplevel):
         super().__init__(parent)
         self.title("Cluster Filter Settings")
         self.resizable(True, True)
-        self.protocol("WM_DELETE_WINDOW", self.withdraw)  # hide, don't destroy
+        self.protocol("WM_DELETE_WINDOW", self.withdraw)
 
         self._conn = conn
         self._on_status_change = on_status_change  # callback(summary: str)
 
-        self._sp_cont = {}
-        self._sp_dist = {}
-        self._dx_cont = {}
-        self._dx_pfx  = {}
+        self._sp_cty   = tk.StringVar()   # spotter country  → DOC/PASS
+        self._sp_state = tk.StringVar()   # spotter state    → DOS/PASS
+        self._dx_cty   = tk.StringVar()   # DX country       → DXCTY/PASS
+        self._dx_state = tk.StringVar()   # DX state         → DXSTATE/PASS
+        self._band_vars = {b: tk.BooleanVar(value=True) for b in PANEL_BANDS}
 
         self._build()
 
-    # ── public ──────────────────────────────────────────────────────────────
+    # ── public API ───────────────────────────────────────────────────────────
 
     def append_server_line(self, line: str):
-        """Append one raw cluster text line to the server status pane."""
         self._srv_txt.configure(state="normal")
         self._srv_txt.insert(tk.END, line + "\n")
         self._srv_txt.see(tk.END)
@@ -64,135 +73,155 @@ class FilterPanel(tk.Toplevel):
         self._srv_txt.delete("1.0", tk.END)
         self._srv_txt.configure(state="disabled")
 
-    # ── private: build ───────────────────────────────────────────────────────
+    # ── build ────────────────────────────────────────────────────────────────
 
     def _build(self):
         pane = tk.PanedWindow(self, orient=tk.HORIZONTAL,
                               sashrelief=tk.RAISED, sashwidth=5)
         pane.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-
-        pane.add(self._build_left(pane),  minsize=370)
-        pane.add(self._build_right(pane), minsize=260)
+        pane.add(self._build_left(pane),  minsize=360)
+        pane.add(self._build_right(pane), minsize=270)
 
     def _build_left(self, parent):
         f = tk.Frame(parent, padx=10, pady=8)
 
+        tk.Label(f, text="Mode: CW  (applied at connect, always)",
+                 fg="gray", font=("", 9, "italic")).pack(anchor="w", pady=(0, 8))
+
         # Spotter section
         tk.Label(f, text="SPOTTER LOCATION",
                  font=("", 10, "bold")).pack(anchor="w")
-
-        tk.Label(f, text="Continent", fg="gray").pack(anchor="w", pady=(5, 1))
-        fg = tk.Frame(f); fg.pack(anchor="w")
-        self._sp_cont = _checkbox_grid(fg, CONTINENTS, ncols=6)
-
-        tk.Label(f, text="NA / US District", fg="gray").pack(anchor="w", pady=(7, 1))
-        fg = tk.Frame(f); fg.pack(anchor="w")
-        self._sp_dist = _checkbox_grid(fg, NA_DISTRICTS, ncols=6)
+        self._entry_row(f, "Country (CTY.DAT):", self._sp_cty,
+                        presets=[("NA", _CTY["NA"]), ("EU", _CTY["EU"]),
+                                 ("AS", _CTY["AS"])])
+        self._entry_row(f, "US State:", self._sp_state,
+                        presets=[("W6", _W6), ("W7", _W7),
+                                 ("W6+7", f"{_W6},{_W7}")])
 
         ttk.Separator(f, orient="horizontal").pack(fill="x", pady=10)
 
         # DX section
         tk.Label(f, text="DX LOCATION",
                  font=("", 10, "bold")).pack(anchor="w")
+        self._entry_row(f, "Country (CTY.DAT):", self._dx_cty,
+                        presets=[("NA",  _CTY["NA"]),  ("EU",  _CTY["EU"]),
+                                 ("AS",  _CTY["AS"]),  ("OC",  _CTY["OC"])])
+        self._entry_row(f, "US State:", self._dx_state, presets=[])
 
-        tk.Label(f, text="Continent", fg="gray").pack(anchor="w", pady=(5, 1))
-        fg = tk.Frame(f); fg.pack(anchor="w")
-        self._dx_cont = _checkbox_grid(fg, CONTINENTS, ncols=6)
+        ttk.Separator(f, orient="horizontal").pack(fill="x", pady=10)
 
-        tk.Label(f, text="Major Prefixes", fg="gray").pack(anchor="w", pady=(7, 1))
-        fg = tk.Frame(f); fg.pack(anchor="w")
-        self._dx_pfx = _checkbox_grid(fg, DX_PREFIXES, ncols=5)
+        # Band section
+        tk.Label(f, text="BAND  (uncheck = exclude at server)",
+                 font=("", 10, "bold")).pack(anchor="w")
+        bf = tk.Frame(f); bf.pack(anchor="w", pady=(5, 0))
+        for i, band in enumerate(PANEL_BANDS):
+            ttk.Checkbutton(bf, text=f"{band}m",
+                            variable=self._band_vars[band]).grid(
+                                row=0, column=i, padx=4)
+        sb = tk.Frame(f); sb.pack(anchor="w", pady=(3, 0))
+        ttk.Button(sb, text="All",  command=self._bands_all).pack(side=tk.LEFT, padx=(0,4))
+        ttk.Button(sb, text="None", command=self._bands_none).pack(side=tk.LEFT)
 
-        # Buttons
-        bf = tk.Frame(f)
-        bf.pack(anchor="w", pady=(14, 4))
-        ttk.Button(bf, text="Apply",
+        ttk.Separator(f, orient="horizontal").pack(fill="x", pady=10)
+
+        btnf = tk.Frame(f); btnf.pack(anchor="w")
+        ttk.Button(btnf, text="Apply",
                    command=self._apply).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(bf, text="Reset all filters",
+        ttk.Button(btnf, text="Reset all filters",
                    command=self._reset).pack(side=tk.LEFT)
-
         return f
 
     def _build_right(self, parent):
         f = tk.Frame(parent, padx=10, pady=8)
-
         tk.Label(f, text="SERVER STATUS",
                  font=("", 10, "bold")).pack(anchor="w")
 
-        txt_frame = tk.Frame(f)
-        txt_frame.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
-
-        self._srv_txt = tk.Text(txt_frame, width=34, height=22,
+        tf = tk.Frame(f); tf.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
+        self._srv_txt = tk.Text(tf, width=36, height=24,
                                 font=("Courier", 9), state="disabled",
                                 wrap="none", bg="#f5f5f5")
-        sb = ttk.Scrollbar(txt_frame, command=self._srv_txt.yview)
+        sb = ttk.Scrollbar(tf, command=self._srv_txt.yview)
         self._srv_txt.configure(yscrollcommand=sb.set)
         self._srv_txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
 
-        bf = tk.Frame(f)
-        bf.pack(anchor="w", pady=(8, 0))
+        bf = tk.Frame(f); bf.pack(anchor="w", pady=(8, 0))
         ttk.Button(bf, text="Refresh",
                    command=self._refresh).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(bf, text="Reset all filters",
                    command=self._reset).pack(side=tk.LEFT)
-
         return f
 
-    # ── private: actions ─────────────────────────────────────────────────────
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _entry_row(self, parent, label, var, presets):
+        tk.Label(parent, text=label, fg="gray").pack(anchor="w", pady=(5, 1))
+        row = tk.Frame(parent); row.pack(anchor="w", fill="x")
+        ttk.Entry(row, textvariable=var, width=26).pack(side=tk.LEFT)
+        for lbl, val in presets:
+            ttk.Button(row, text=lbl, width=len(lbl)+1,
+                       command=lambda v=val, sv=var: sv.set(v)).pack(
+                           side=tk.LEFT, padx=(3, 0))
+
+    def _bands_all(self):
+        for v in self._band_vars.values(): v.set(True)
+
+    def _bands_none(self):
+        for v in self._band_vars.values(): v.set(False)
+
+    # ── actions ──────────────────────────────────────────────────────────────
 
     def _apply(self):
-        sp_conts = [c for c, v in self._sp_cont.items() if v.get()]
-        sp_dists = [p for p, v in self._sp_dist.items() if v.get()]
-        dx_conts = [c for c, v in self._dx_cont.items() if v.get()]
-        dx_pfxs  = [p for p, v in self._dx_pfx.items()  if v.get()]
+        self._conn.send_command("UNSET/FILTER")
 
-        self._conn.send_command("CLEAR/SPOTS ALL")
+        cmds, parts = [], []
 
-        sp_terms = ([f"by_continent {c}" for c in sp_conts] +
-                    [f"by_prefix {p}"    for p in sp_dists])
-        dx_terms = ([f"call_continent {c}" for c in dx_conts] +
-                    [f"call_prefix {p}"    for p in dx_pfxs])
+        sp_cty = self._sp_cty.get().strip()
+        if sp_cty:
+            cmds.append(f"SET/FILTER DOC/PASS {sp_cty}")
+            parts.append(f"Spotters:{sp_cty}")
 
-        slot = 1
-        if sp_terms and dx_terms:
-            # AND spotter+DX conditions within each slot
-            for sp in sp_terms:
-                for dx in dx_terms:
-                    self._conn.send_command(f"ACCEPT/SPOTS {slot} {sp} {dx}")
-                    slot += 1
-        elif sp_terms:
-            for sp in sp_terms:
-                self._conn.send_command(f"ACCEPT/SPOTS {slot} {sp}")
-                slot += 1
-        elif dx_terms:
-            for dx in dx_terms:
-                self._conn.send_command(f"ACCEPT/SPOTS {slot} {dx}")
-                slot += 1
+        sp_state = self._sp_state.get().strip()
+        if sp_state:
+            cmds.append(f"SET/FILTER DOS/PASS {sp_state}")
+            parts.append(f"Spotter state:{sp_state}")
 
-        self._notify_status(sp_conts, sp_dists, dx_conts, dx_pfxs)
+        dx_cty = self._dx_cty.get().strip()
+        if dx_cty:
+            cmds.append(f"SET/FILTER DXCTY/PASS {dx_cty}")
+            parts.append(f"DX:{dx_cty}")
+
+        dx_state = self._dx_state.get().strip()
+        if dx_state:
+            cmds.append(f"SET/FILTER DXSTATE/PASS {dx_state}")
+            parts.append(f"DX state:{dx_state}")
+
+        checked = {b for b, v in self._band_vars.items() if v.get()}
+        reject  = [b for b in PANEL_BANDS if b not in checked]
+        if reject and checked:   # mixed selection — send reject list
+            cmds.append(f"SET/FILTER DXBM/REJECT {','.join(reject)}")
+            bands_str = ",".join(f"{b}m" for b in PANEL_BANDS if b in checked)
+            parts.append(f"Bands:{bands_str}")
+
+        for cmd in cmds:
+            self._conn.send_command(cmd)
+
+        summary = " | ".join(parts) if parts else "none"
+        self._on_status_change(f"Filters: {summary}")
         self._refresh()
 
     def _reset(self):
-        for cmd in _RESET_CMDS:
-            self._conn.send_command(cmd)
-        for v in (list(self._sp_cont.values()) + list(self._sp_dist.values()) +
-                  list(self._dx_cont.values()) + list(self._dx_pfx.values())):
-            v.set(False)
+        self._conn.send_command("UNSET/FILTER")
+        self._conn.send_command("SET/FT8")
+        self._conn.send_command("SET/FT4")
+        self._sp_cty.set("")
+        self._sp_state.set("")
+        self._dx_cty.set("")
+        self._dx_state.set("")
+        self._bands_all()
         self._on_status_change("⚠ TEST MODE — all spots")
         self._refresh()
 
     def _refresh(self):
         self.clear_server_status()
         self._conn.send_command("SH/FILTER")
-
-    def _notify_status(self, sp_conts, sp_dists, dx_conts, dx_pfxs):
-        sp = sp_conts + sp_dists
-        dx = dx_conts + dx_pfxs
-        parts = []
-        if sp:
-            parts.append(f"Spotters: {','.join(sp)}")
-        if dx:
-            parts.append(f"DX: {','.join(dx)}")
-        summary = " | ".join(parts) if parts else "none"
-        self._on_status_change(f"Filters: {summary}")
