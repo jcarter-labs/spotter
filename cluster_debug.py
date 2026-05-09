@@ -28,32 +28,49 @@ LOGIN_WAIT = 2.5   # seconds after sending callsign before sending commands
 #   (label, command_to_send)
 # After every non-SH/FILTER command we automatically send SH/FILTER and
 # capture the delta so we can see whether the command registered.
+#
+# Design notes on what we are testing here:
+#
+# U.S. call district filtering (W1/W2/W6...) does not appear to be a native
+# structured filter capability in CC Cluster, likely because call districts are
+# not represented as geographic entities in CTY.DAT and are only heuristically
+# derivable from callsigns.
+#
+# State-level filtering (CA/TX/OR...) is much more plausible server-side. The
+# presence of SH/FILTER fields "DX State" and "DX Spot Orig State" indicates
+# the cluster already computes and stores state metadata internally, even if
+# the corresponding user-facing filter command syntax is undocumented.
 # ---------------------------------------------------------------------------
 PROBE_CMDS = [
     # --- baseline ---
-    ("Baseline SH/FILTER",               "SH/FILTER"),
+    ("Baseline SH/FILTER",                    "SH/FILTER"),
 
-    # --- spotter location candidates ---
-    ("Spotter: SET/ORIGIN NA",           "SET/ORIGIN NA"),
-    ("Spotter: SET/SPOTTER NA",          "SET/SPOTTER NA"),
-    ("Spotter: ACCEPT/SPOT by_continent","ACCEPT/SPOT 1 by_continent NA"),
-    ("Spotter: SET/SPOT_ORIG_CTY NA",    "SET/SPOT_ORIG_CTY NA"),
-    ("Spotter: SET/SPOTORIGCTY NA",      "SET/SPOTORIGCTY NA"),
+    # --- DX state filter candidates ---
+    # SH/FILTER field: "DX State Filter/All set OFF"
+    ("DX state: DXSTATE/PASS CA",             "SET/FILTER DXSTATE/PASS CA"),
+    ("DX state: DXSTATE CA (no /PASS)",       "SET/FILTER DXSTATE CA"),
+    ("DX state: SET/DXSTATE CA",              "SET/DXSTATE CA"),
+    ("DX state: SET/FILTER DX_STATE/PASS CA", "SET/FILTER DX_STATE/PASS CA"),
+    ("Reset",                                  "UNSET/FILTER"),
 
-    # --- DX location candidates ---
-    ("DX: ACCEPT/SPOT call_continent",   "ACCEPT/SPOT 1 call_continent EU"),
-    ("DX: SET/DXCTY EU",                 "SET/DXCTY EU"),
-    ("DX: SET/DX_CTY EU",               "SET/DX_CTY EU"),
+    # --- spotter state filter candidates ---
+    # SH/FILTER field: "DX Spot Orig State Filter/All set OFF"
+    # Naming pattern: DOC=DX Orig Country, so DOS=DX Orig State is a plausible guess
+    ("Spotter state: DOS/PASS CA",            "SET/FILTER DOS/PASS CA"),
+    ("Spotter state: DOS CA (no /PASS)",      "SET/FILTER DOS CA"),
+    ("Spotter state: SET/DOS CA",             "SET/DOS CA"),
+    ("Spotter state: DOCSTATE/PASS CA",       "SET/FILTER DOCSTATE/PASS CA"),
+    ("Spotter state: SPOTORIGSTATE/PASS CA",  "SET/FILTER SPOTORIGSTATE/PASS CA"),
+    ("Spotter state: ORIGSTATE/PASS CA",      "SET/FILTER ORIGSTATE/PASS CA"),
+    ("Reset",                                  "UNSET/FILTER"),
 
-    # --- band filter candidates ---
-    ("Band: SET/BAND 20",                "SET/BAND 20"),
-    ("Band: SET/NOBAND 40",              "SET/NOBAND 40"),
-    ("Band: REJECT/SPOT on 40m",         "REJECT/SPOT 1 on 40m"),
-    ("Band: SET/FILTER BAND 20",         "SET/FILTER BAND 20"),
+    # --- combined state probe: multi-state, both spotter and DX ---
+    ("DX multi-state: DXSTATE/PASS CA,OR,WA", "SET/FILTER DXSTATE/PASS CA,OR,WA"),
+    ("SH/FILTER after multi-state",            "SH/FILTER"),
+    ("Reset",                                  "UNSET/FILTER"),
 
-    # --- reset ---
-    ("Reset: CLEAR/SPOTS ALL",           "CLEAR/SPOTS ALL"),
-    ("Final SH/FILTER",                  "SH/FILTER"),
+    # --- final clean state ---
+    ("Final SH/FILTER",                        "SH/FILTER"),
 ]
 
 PAUSE = 1.5   # seconds between commands in probe mode
