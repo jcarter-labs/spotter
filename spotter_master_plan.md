@@ -95,35 +95,86 @@ spotter/
 
 ---
 
-## CC Cluster Commands — Verified vs Pending
+## CC Cluster Commands — Verified
 
-### Verified (tested live against ve7cc.net CC Cluster 3.x)
+All commands tested live against ve7cc.net CC Cluster 3.397.
+
+### Mode (always on at connect)
 
 | Command | Effect |
 |---|---|
 | `SET/SKIMMER` | Enable skimmer/RBN spots |
 | `SET/NOFT8` | Disable FT8 spots |
 | `SET/NOFT4` | Disable FT4 spots |
-| `SET/FT8` | Re-enable FT8 (used by Reset) |
-| `SET/FT4` | Re-enable FT4 (used by Reset) |
-| `SH/FILTER` | Display current filter state (raw text) |
+| `SET/FT8` / `SET/FT4` | Re-enable for test mode |
 
-### Pending verification (do not build UI until confirmed)
+### Band filter — DXBM (DX Band Mode)
 
-| Command | Intended effect | Status |
-|---|---|---|
-| `ACCEPT/SPOTS N by_continent NA` | Spotter continent filter | Silently ignored — wrong syntax |
-| `ACCEPT/SPOTS N call_continent EU` | DX continent filter | Unverified |
-| `ACCEPT/SPOTS N by_prefix W6` | Spotter district filter | Unverified |
-| `CLEAR/SPOTS ALL` | Clear location filters | No response — may not work |
-| Band filter commands | Limit spots by band | Unknown syntax |
+Strategy: specify bands to REJECT; everything else passes.
+Band codes: `160`, `80`, `40`, `30`, `20`, `17`, `15`, `12`, `10`, `6`
 
-**Diagnostic tool for verifying new commands:**
+| Goal | Command |
+|---|---|
+| 20m only | `SET/FILTER DXBM/REJECT 160,80,40,30,17,15,12,10,6` |
+| 20m + 40m | `SET/FILTER DXBM/REJECT 160,80,30,17,15,12,10,6` |
+| All HF (no band filter) | `UNSET/FILTER` |
+
+SH/FILTER confirms: `BandMode Filter set to Reject: 160-CW,80-CW,...`
+
+### Spotter country filter — DOC (DX Spot Origin Country)
+
+Uses CTY.DAT country prefixes — NOT callsign prefixes.
+Key mapping: USA = `K` (not `W`); Canada = `VE`; Mexico = `XE`.
+
+| Goal | Command |
+|---|---|
+| US spotters only | `SET/FILTER DOC/PASS K` |
+| US + Canada spotters | `SET/FILTER DOC/PASS K,VE` |
+| NA spotters | `SET/FILTER DOC/PASS K,VE,XE` |
+| EU spotters | `SET/FILTER DOC/PASS G,F,I,DL,EA,OH,SM,LA,OZ,PA,ON,HB,OE,OK,OM,HA,YO,LZ,SV,YU,9A,S5` |
+
+SH/FILTER confirms: `DX Spot Orig Cty Filter/All set to Pass: K,VE`
+
+### DX country filter — DXCTY
+
+Uses same CTY.DAT prefixes.
+
+| Goal | Command |
+|---|---|
+| DX in Japan only | `SET/FILTER DXCTY/PASS JA` |
+| DX in EU | `SET/FILTER DXCTY/PASS G,F,I,DL,EA,...` |
+| No DX filter | `UNSET/FILTER` |
+
+SH/FILTER confirms: `DX CTY Filter/All set to Pass: JA`
+
+### Reset
+
+`UNSET/FILTER` — clears all user filters. The cluster keeps its own
+default reject for VHF (2m, 70cm, MW) regardless.
+
+### What does NOT work (confirmed via probe)
+
+| Command tried | Result |
+|---|---|
+| `ACCEPT/SPOTS N by_continent NA` | Silently ignored |
+| `SET/ORIGIN NA`, `SET/SPOTTER NA` | "command error" |
+| `SET/SPOTORIGCTY NA`, `SET/DXCTY EU` | "command error" |
+| `SET/BAND 20`, `SET/NOBAND 40` | "command error" |
+| `CLEAR/SPOTS ALL` | Silently ignored |
+| `W` as country prefix for USA | "Invalid standard country prefix" |
+
+### US call district filtering
+
+NOT possible via CC Cluster. All US stations map to `K` in CTY.DAT
+regardless of call district (W1, W6, K7, etc.). Remove district
+checkboxes from filter panel — replace with country-level selectors.
+
+### Diagnostic commands
+
 ```bash
-cd /Users/jc/code/spotter && nc ve7cc.net 23
+cd /Users/jc/code/spotter && .venv/bin/python cluster_debug.py --probe
+cd /Users/jc/code/spotter && .venv/bin/python cluster_debug.py --interactive
 ```
-Type `N6YU` ↩, wait for `CCC >` prompt, then type commands and observe responses.
-`SH/FILTER` after each command confirms whether it registered.
 
 ---
 
