@@ -21,17 +21,16 @@ BAND_RANGES = [
     ("6m",  50000, 54000),
 ]
 
+
 @dataclass
 class ClusterFilter:
-    modes: list = field(default_factory=list)            # e.g. ["CW"]
-    bands: list = field(default_factory=list)            # e.g. ["20m", "40m"]; empty = all HF
-    dx_continents: list = field(default_factory=list)    # e.g. ["EU", "AS"]
-    spotter_continents: list = field(default_factory=list)  # e.g. ["NA"]
+    modes: list = field(default_factory=list)
+    bands: list = field(default_factory=list)
+    dx_continents: list = field(default_factory=list)
+    spotter_continents: list = field(default_factory=list)
 
 
-# CC Cluster (VE7CC) uses SET/NO* commands to disable spot types.
 # Verified against ve7cc.net CC Cluster 3.x: SET/NOFT8, SET/NOFT4, SET/NOCW.
-# Band and continent server-side filtering not yet confirmed — add here once tested.
 _MODE_DISABLE_CMDS = {
     "FT8":  "SET/NOFT8",
     "FT4":  "SET/NOFT4",
@@ -48,7 +47,6 @@ def to_cc_commands(f: ClusterFilter) -> list:
         for mode, cmd in _MODE_DISABLE_CMDS.items():
             if mode not in wanted:
                 cmds.append(cmd)
-    # Band and continent filtering: CC Cluster commands TBD pending live testing.
     return cmds
 
 
@@ -81,16 +79,11 @@ def detect_band(freq_khz: float):
 
 def detect_mode(comment: str) -> str:
     c = comment.upper()
-    if "FT8" in c:
-        return "FT8"
-    if "FT4" in c:
-        return "FT4"
-    if "RTTY" in c:
-        return "RTTY"
-    if "CW" in c:
-        return "CW"
-    if "SSB" in c or "USB" in c or "LSB" in c:
-        return "SSB"
+    if "FT8" in c:  return "FT8"
+    if "FT4" in c:  return "FT4"
+    if "RTTY" in c: return "RTTY"
+    if "CW" in c:   return "CW"
+    if "SSB" in c or "USB" in c or "LSB" in c: return "SSB"
     return "UNKNOWN"
 
 
@@ -105,30 +98,28 @@ def parse_spot(line: str):
     dx_dxcc, dx_continent = prefix_to_dxcc(dx_call)
     spotter_dxcc, spotter_continent = prefix_to_dxcc(spotter)
     return Spot(
-        dx_call=dx_call,
-        spotter=spotter,
-        freq_khz=freq_khz,
-        band=band,
-        mode=mode,
-        comment=comment.strip(),
-        time_utc=time_utc,
-        dx_dxcc=dx_dxcc,
-        dx_continent=dx_continent,
-        spotter_dxcc=spotter_dxcc,
-        spotter_continent=spotter_continent,
+        dx_call=dx_call, spotter=spotter, freq_khz=freq_khz,
+        band=band, mode=mode, comment=comment.strip(), time_utc=time_utc,
+        dx_dxcc=dx_dxcc, dx_continent=dx_continent,
+        spotter_dxcc=spotter_dxcc, spotter_continent=spotter_continent,
     )
 
 
 class ClusterConnection:
-    def __init__(self, host: str, port: int, callsign: str, spot_queue: queue.Queue,
-                 cluster_filter: ClusterFilter = None):
+    def __init__(self, host: str, port: int, callsign: str,
+                 spot_queue: queue.Queue,
+                 cluster_filter: ClusterFilter = None,
+                 text_queue: queue.Queue = None):
         self._host = host
         self._port = port
         self._callsign = callsign
         self._queue = spot_queue
+        self._text_queue = text_queue      # non-spot cluster lines (SH/FILTER etc.)
         self._filter = cluster_filter or ClusterFilter()
         self._stop_event = threading.Event()
         self._thread = None
+        self._sock = None
+        self._sock_lock = threading.Lock()
 
     def start(self):
         self._stop_event.clear()
@@ -140,15 +131,30 @@ class ClusterConnection:
         if self._thread:
             self._thread.join(timeout=1.0)
 
+    def send_command(self, cmd: str):
+        """Send an arbitrary command to the cluster from any thread."""
+        with self._sock_lock:
+            s = self._sock
+        if s is not None:
+            try:
+                s.sendall((cmd + "\r\n").encode())
+            except OSError:
+                pass
+
     def _read_loop(self):
         backoff = 5
         while not self._stop_event.is_set():
+            sock = None
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(30.0)
                 sock.connect((self._host, self._port))
                 sock.settimeout(None)
                 backoff = 5
+
+                with self._sock_lock:
+                    self._sock = sock
+
                 sock.sendall((self._callsign + "\r\n").encode())
                 self._stop_event.wait(2)
                 sock.sendall(b"SET/SKIMMER\r\n")
@@ -156,6 +162,7 @@ class ClusterConnection:
                 for cmd in to_cc_commands(self._filter):
                     sock.sendall((cmd + "\r\n").encode())
                     self._stop_event.wait(0.3)
+
                 fh = sock.makefile("r", errors="replace")
                 for line in fh:
                     if self._stop_event.is_set():
@@ -166,8 +173,22 @@ class ClusterConnection:
                             self._queue.put_nowait(spot)
                         except queue.Full:
                             pass
-                sock.close()
+                    elif self._text_queue is not None:
+                        stripped = line.rstrip()
+                        if stripped:
+                            try:
+                                self._text_queue.put_nowait(stripped)
+                            except queue.Full:
+                                pass
             except Exception:
                 if not self._stop_event.is_set():
                     self._stop_event.wait(backoff)
                     backoff = min(backoff * 2, 60)
+            finally:
+                with self._sock_lock:
+                    self._sock = None
+                if sock:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
