@@ -36,7 +36,6 @@ _MODE_DISABLE_CMDS = {
     "FT4":  "SET/NOFT4",
     "CW":   "SET/NOCW",
     "RTTY": "SET/NORTTY",
-    "SSB":  "SET/NOSSB",
 }
 
 

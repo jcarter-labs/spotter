@@ -15,7 +15,7 @@ Band (reject all except selected):
 
 Reset:
   UNSET/FILTER                       — clear all user location/band filters
-  SET/FT8 + SET/FT4                 — re-enable digital (test mode only)
+  SET/NOFT8 + SET/NOFT4             — ensure CW-only (always sent)
 
 Note: call districts (W1/W6...) are not filterable at CC Cluster.
       State filtering (CA/OR/WA...) is the finest US granularity available.
@@ -52,10 +52,10 @@ class FilterPanel(tk.Toplevel):
         self._conn = conn
         self._on_status_change = on_status_change  # callback(summary: str)
 
-        self._sp_cty   = tk.StringVar()   # spotter country  → DOC/PASS
-        self._sp_state = tk.StringVar()   # spotter state    → DOS/PASS
-        self._dx_cty   = tk.StringVar()   # DX country       → DXCTY/PASS
-        self._dx_state = tk.StringVar()   # DX state         → DXSTATE/PASS
+        self._sp_cty   = tk.StringVar()
+        self._sp_state = tk.StringVar()
+        self._dx_cty   = tk.StringVar()
+        self._dx_state = tk.StringVar()
         self._band_vars = {b: tk.BooleanVar(value=True) for b in PANEL_BANDS}
 
         self._build()
@@ -73,14 +73,27 @@ class FilterPanel(tk.Toplevel):
         self._srv_txt.delete("1.0", tk.END)
         self._srv_txt.configure(state="disabled")
 
+    def append_spot_line(self, spot):
+        line = (f"{spot.time_utc}  {spot.freq_khz:8.1f}  "
+                f"{spot.dx_call:<10}  de {spot.spotter}")
+        self._spot_txt.configure(state="normal")
+        self._spot_txt.insert(tk.END, line + "\n")
+        self._spot_txt.see(tk.END)
+        self._spot_txt.configure(state="disabled")
+
+    def clear_spots_log(self):
+        self._spot_txt.configure(state="normal")
+        self._spot_txt.delete("1.0", tk.END)
+        self._spot_txt.configure(state="disabled")
+
     # ── build ────────────────────────────────────────────────────────────────
 
     def _build(self):
-        pane = tk.PanedWindow(self, orient=tk.HORIZONTAL,
-                              sashrelief=tk.RAISED, sashwidth=5)
-        pane.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-        pane.add(self._build_left(pane),  minsize=360)
-        pane.add(self._build_right(pane), minsize=270)
+        outer = tk.PanedWindow(self, orient=tk.HORIZONTAL,
+                               sashrelief=tk.RAISED, sashwidth=5)
+        outer.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        outer.add(self._build_left(outer),  minsize=360)
+        outer.add(self._build_right(outer), minsize=270)
 
     def _build_left(self, parent):
         f = tk.Frame(parent, padx=10, pady=8)
@@ -88,7 +101,6 @@ class FilterPanel(tk.Toplevel):
         tk.Label(f, text="Mode: CW  (applied at connect, always)",
                  fg="gray", font=("", 9, "italic")).pack(anchor="w", pady=(0, 8))
 
-        # Spotter section
         tk.Label(f, text="SPOTTER LOCATION",
                  font=("", 10, "bold")).pack(anchor="w")
         self._entry_row(f, "Country (CTY.DAT):", self._sp_cty,
@@ -100,7 +112,6 @@ class FilterPanel(tk.Toplevel):
 
         ttk.Separator(f, orient="horizontal").pack(fill="x", pady=10)
 
-        # DX section
         tk.Label(f, text="DX LOCATION",
                  font=("", 10, "bold")).pack(anchor="w")
         self._entry_row(f, "Country (CTY.DAT):", self._dx_cty,
@@ -110,7 +121,6 @@ class FilterPanel(tk.Toplevel):
 
         ttk.Separator(f, orient="horizontal").pack(fill="x", pady=10)
 
-        # Band section
         tk.Label(f, text="BAND  (uncheck = exclude at server)",
                  font=("", 10, "bold")).pack(anchor="w")
         bf = tk.Frame(f); bf.pack(anchor="w", pady=(5, 0))
@@ -119,7 +129,7 @@ class FilterPanel(tk.Toplevel):
                             variable=self._band_vars[band]).grid(
                                 row=0, column=i, padx=4)
         sb = tk.Frame(f); sb.pack(anchor="w", pady=(3, 0))
-        ttk.Button(sb, text="All",  command=self._bands_all).pack(side=tk.LEFT, padx=(0,4))
+        ttk.Button(sb, text="All",  command=self._bands_all).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(sb, text="None", command=self._bands_none).pack(side=tk.LEFT)
 
         ttk.Separator(f, orient="horizontal").pack(fill="x", pady=10)
@@ -132,24 +142,46 @@ class FilterPanel(tk.Toplevel):
         return f
 
     def _build_right(self, parent):
-        f = tk.Frame(parent, padx=10, pady=8)
+        vpane = tk.PanedWindow(parent, orient=tk.VERTICAL,
+                               sashrelief=tk.RAISED, sashwidth=4)
+        vpane.add(self._build_server_status(vpane), minsize=150)
+        vpane.add(self._build_spots_log(vpane),     minsize=150)
+        return vpane
+
+    def _build_server_status(self, parent):
+        f = tk.Frame(parent, padx=8, pady=6)
         tk.Label(f, text="SERVER STATUS",
                  font=("", 10, "bold")).pack(anchor="w")
-
         tf = tk.Frame(f); tf.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
-        self._srv_txt = tk.Text(tf, width=36, height=24,
+        self._srv_txt = tk.Text(tf, width=36, height=12,
                                 font=("Courier", 9), state="disabled",
                                 wrap="none", bg="#f5f5f5")
         sb = ttk.Scrollbar(tf, command=self._srv_txt.yview)
         self._srv_txt.configure(yscrollcommand=sb.set)
         self._srv_txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
-
-        bf = tk.Frame(f); bf.pack(anchor="w", pady=(8, 0))
+        bf = tk.Frame(f); bf.pack(anchor="w", pady=(6, 0))
         ttk.Button(bf, text="Refresh",
                    command=self._refresh).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(bf, text="Reset all filters",
                    command=self._reset).pack(side=tk.LEFT)
+        return f
+
+    def _build_spots_log(self, parent):
+        f = tk.Frame(parent, padx=8, pady=6)
+        tk.Label(f, text="SPOTS LOG",
+                 font=("", 10, "bold")).pack(anchor="w")
+        tf = tk.Frame(f); tf.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
+        self._spot_txt = tk.Text(tf, width=36, height=12,
+                                 font=("Courier", 9), state="disabled",
+                                 wrap="none", bg="#f0f8f0")
+        sb = ttk.Scrollbar(tf, command=self._spot_txt.yview)
+        self._spot_txt.configure(yscrollcommand=sb.set)
+        self._spot_txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        bf = tk.Frame(f); bf.pack(anchor="w", pady=(6, 0))
+        ttk.Button(bf, text="Clear",
+                   command=self.clear_spots_log).pack(side=tk.LEFT)
         return f
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -200,7 +232,7 @@ class FilterPanel(tk.Toplevel):
 
         checked = {b for b, v in self._band_vars.items() if v.get()}
         reject  = [b for b in PANEL_BANDS if b not in checked]
-        if reject and checked:   # mixed selection — send reject list
+        if reject and checked:
             cmds.append(f"SET/FILTER DXBM/REJECT {','.join(reject)}")
             bands_str = ",".join(f"{b}m" for b in PANEL_BANDS if b in checked)
             parts.append(f"Bands:{bands_str}")
@@ -214,14 +246,14 @@ class FilterPanel(tk.Toplevel):
 
     def _reset(self):
         self._conn.send_command("UNSET/FILTER")
-        self._conn.send_command("SET/FT8")
-        self._conn.send_command("SET/FT4")
+        self._conn.send_command("SET/NOFT8")
+        self._conn.send_command("SET/NOFT4")
         self._sp_cty.set("")
         self._sp_state.set("")
         self._dx_cty.set("")
         self._dx_state.set("")
         self._bands_all()
-        self._on_status_change("⚠ TEST MODE — all spots")
+        self._on_status_change("Filters: none")
         self._refresh()
 
     def _refresh(self):

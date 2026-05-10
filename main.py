@@ -9,9 +9,10 @@ from filter_panel import FilterPanel
 from filters import DedupCache
 from scope_utils import drain_queue
 
-POLL_MS = 200
-BW_OPTIONS    = ["10", "20", "50", "100"]
-DEDUP_OPTIONS = ["1", "10", "30"]
+POLL_MS        = 200
+BW_OPTIONS     = ["10", "20", "50", "100"]
+DEDUP_OPTIONS  = ["1", "10", "30"]
+WINDOW_OPTIONS = ["1", "5", "10", "30"]
 
 
 class SpotterApp(tk.Tk):
@@ -24,7 +25,7 @@ class SpotterApp(tk.Tk):
         self._config = Config()
         self._config.load()
         self._spot_queue = queue.Queue()
-        self._text_queue = queue.Queue()   # raw cluster text → filter panel
+        self._text_queue = queue.Queue()
         self._dedup = DedupCache(window_minutes=self._config.get("dedup_minutes", 10))
         self._conn = None
         self._filter_panel = None
@@ -65,16 +66,27 @@ class SpotterApp(tk.Tk):
         dedup_box = ttk.Combobox(ctrl, textvariable=self._dedup_var,
                                   values=DEDUP_OPTIONS, width=4)
         dedup_box.pack(side=tk.LEFT, padx=(2, 0))
-        dedup_box.bind("<Return>", lambda _: self._on_set_dedup())
+        dedup_box.bind("<Return>",            lambda _: self._on_set_dedup())
         dedup_box.bind("<<ComboboxSelected>>", lambda _: self._on_set_dedup())
         ttk.Button(ctrl, text="Set",
                    command=self._on_set_dedup).pack(side=tk.LEFT, padx=(2, 10))
+
+        # Window (scope history)
+        tk.Label(ctrl, text="Window:").pack(side=tk.LEFT)
+        saved_win = str(self._config.get("window_minutes", 10))
+        if saved_win not in WINDOW_OPTIONS:
+            saved_win = "10"
+        self._window_var = tk.StringVar(value=saved_win)
+        win_box = ttk.Combobox(ctrl, textvariable=self._window_var,
+                                values=WINDOW_OPTIONS, width=4, state="readonly")
+        win_box.pack(side=tk.LEFT, padx=(2, 10))
+        win_box.bind("<<ComboboxSelected>>", lambda _: self._on_set_window())
 
         # Filters button
         ttk.Button(ctrl, text="Filters…",
                    command=self._open_filter_panel).pack(side=tk.LEFT, padx=(0, 6))
 
-        # Status block (right-aligned) — connection + filter status
+        # Status block (right-aligned)
         status_block = tk.Frame(ctrl)
         status_block.pack(side=tk.RIGHT, padx=8)
 
@@ -89,7 +101,9 @@ class SpotterApp(tk.Tk):
         # Band scope
         center = float(self._config.get("center_khz", 14025.0))
         bw     = float(self._config.get("bandwidth_khz", 50.0))
-        self._scope = BandScope(self, center_khz=center, bandwidth_khz=bw, bg="white")
+        win    = int(self._config.get("window_minutes", 10))
+        self._scope = BandScope(self, center_khz=center, bandwidth_khz=bw,
+                                window_minutes=win, bg="white")
         self._scope.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
     # ── Connect ──────────────────────────────────────────────────────────────
@@ -108,7 +122,6 @@ class SpotterApp(tk.Tk):
         self._conn.start()
         self._conn_status_var.set(f"Connected → {host}:{port}  ({callsign})")
 
-        # Build filter panel now that conn exists (hidden until user opens it)
         self._filter_panel = FilterPanel(
             self, self._conn, self._on_filter_status_change)
         self._filter_panel.withdraw()
@@ -116,7 +129,6 @@ class SpotterApp(tk.Tk):
     # ── Poll loop ────────────────────────────────────────────────────────────
 
     def _poll(self):
-        # Spots → dedup → scope
         new_spots = []
         for spot in drain_queue(self._spot_queue):
             if not self._dedup.is_dup(spot):
@@ -124,8 +136,10 @@ class SpotterApp(tk.Tk):
                 new_spots.append(spot)
         if new_spots:
             self._scope.add_spots(new_spots)
+            if self._filter_panel is not None:
+                for spot in new_spots:
+                    self._filter_panel.append_spot_line(spot)
 
-        # Cluster text → filter panel server status pane
         if self._filter_panel is not None:
             try:
                 while True:
@@ -163,6 +177,15 @@ class SpotterApp(tk.Tk):
                 return
             self._dedup = DedupCache(window_minutes=minutes)
             self._config.set("dedup_minutes", minutes)
+            self._config.save()
+        except ValueError:
+            pass
+
+    def _on_set_window(self):
+        try:
+            minutes = int(self._window_var.get())
+            self._scope.set_window(minutes)
+            self._config.set("window_minutes", minutes)
             self._config.save()
         except ValueError:
             pass

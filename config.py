@@ -9,6 +9,7 @@ DEFAULTS = {
     "port": 23,
     "callsign": "N6YU",
     "dedup_minutes": 10,
+    "window_minutes": 10,
     "center_khz": 14025.0,
     "bandwidth_khz": 50.0,
     "last_band": "20m",
