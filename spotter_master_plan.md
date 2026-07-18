@@ -217,55 +217,60 @@ Server-side mode filtering (CW only) verified live. Client-side dedup working.
 
 ---
 
-### STAGE 3 — UI — IN PROGRESS
+### STAGE 3 — UI — IN PROGRESS (3A–3E complete, 3F remains)
 
 #### 3A — Band Scope ✅ COMPLETE
 
-- `bandscope.py`: center freq ± configurable kHz, 10-min scrolling window,
-  elapsed-time X axis (T=0 left, T=-10 right), frequency Y axis
+- `bandscope.py`: center freq ± configurable kHz, scrolling window,
+  elapsed-time X axis (T=0 left, T=-window right), frequency Y axis
 - `main.py`: center freq entry, BW dropdown (10/20/50/100 kHz), dedup combobox,
   Filters… button, two-line status block (filter summary + connection)
 - `scope_utils.py`: format_freq, extract_prefix, drain_queue
 - Run: `cd /Users/jc/code/spotter && .venv/bin/python main.py`
 
-#### 3B — Filter Panel ⚠ PARTIALLY COMPLETE
+#### 3B — Filter Panel ✅ COMPLETE
 
-- `filter_panel.py`: Spotter/DX location checkboxes, server status pane,
-  Apply/Reset/Refresh buttons — UI complete
-- **Blocker**: Location filter commands (`ACCEPT/SPOTS by_continent` etc.) are
-  silently rejected by CC Cluster. Correct syntax unknown.
-- Mode checkboxes missing from panel (CW hardcoded in main.py — intentional)
-- **Do not extend location filter UI until CC Cluster syntax is verified**
+- `filter_panel.py`: three-pane layout — location/band checkboxes (left),
+  server status (middle), SPOTS LOG (right, green bg) showing each passing
+  spot as `TIME  FREQ  DX_CALL  de SPOTTER`
+- Apply/Reset/Refresh buttons send verified `SET/FILTER` commands; Reset
+  re-applies CW-only mode (`SET/NOFT8`/`SET/NOFT4`) instead of clearing it
+- `SET/NOSSB` removed from `cluster.py` — not a valid CC Cluster command
+- Mode checkboxes intentionally absent (CW hardcoded, enforced server-side)
 
-#### 3C — Pending: CC Cluster Syntax Verification
+#### 3C — CC Cluster Syntax Verification ✅ COMPLETE
 
-Goal: Find correct commands for spotter/DX location and band filtering.
+Verified live against ve7cc.net CC Cluster 3.397 via `cluster_debug.py
+--interactive`. Working commands: `DXBM` (band reject list), `DOC`/`DXCTY`
+(spotter/DX country via CTY.DAT prefixes), `DXSTATE`/`DOS` (spotter/DX US
+state, two-letter postal codes). See "CC Cluster Commands — Verified" above
+for the full table, including confirmed non-working commands and the
+call-district vs state distinction (districts are not server-filterable).
 
-Steps:
-1. Extend `cluster_debug.py` with `--interactive` flag (readline loop, send
-   commands, print responses) — **single runnable command to test syntax**
-2. Connect via `cd /Users/jc/code/spotter && .venv/bin/python cluster_debug.py --interactive`
-3. Probe candidate commands, observe SH/FILTER after each
-4. Update the Verified table above
-5. Only then add band/location checkboxes to filter panel
+#### 3D — Band Selection in Filter Panel ✅ COMPLETE
 
-#### 3D — Pending: Band Selection in Filter Panel
+- `PANEL_BANDS` checkboxes (80/40/30/20/17/15/10) in `filter_panel.py`,
+  all-checked = no band filter; unchecking sends `SET/FILTER DXBM/REJECT`
+  with the excluded bands
+- "Refresh" button sends `SH/FILTER`, response routed to server-status pane
+  via `text_queue`
+- Scope window stays independent of band selection (center freq ± BW)
 
-- Checkboxes for HF bands: 80, 40, 30, 20, 17, 15, 10
-- Server-side: send verified band filter commands on Apply
-- "Ask" button: sends SH/FILTER, populates right-pane with raw response
-- Scope window stays independent (center freq ± BW, not band-locked)
+#### 3E — Cosmetic fixes ✅ COMPLETE
 
-#### 3E — Pending: Cosmetic fixes (batch together, one commit)
-
-- Remove center-frequency tick from left Y axis
-- Fix callsign vertical centering on dash marker (slight downward offset needed)
-- No other changes in this commit
+- Center-frequency tick removed from left Y axis
+- Marker switched from `marker="_"` + annotate to `ax.hlines()` at the exact
+  `spot.freq_khz` data coordinate; callsign label uses `va="center"` at the
+  same y so it sits centered on the tick, starting just right of its edge
+- Window size now a `window_minutes` param (1/5/10/30 min dropdown in
+  `main.py`, persisted in config) rather than a hardcoded constant
+- Click on scope copies nearest callsign to system clipboard (QRZ lookup
+  prep) — precedes full KX3 CAT integration below
 
 #### 3F — Deferred: KX3 Integration
 
 - Optional: detect `/dev/cu.usbserial-*`, instantiate RigController from kx3_logger
-- Click spot → send CAT frequency, copy callsign to clipboard
+- Click spot → send CAT frequency (clipboard-copy half already done in 3E)
 - No CAT error shown if KX3 not connected
 
 ---
