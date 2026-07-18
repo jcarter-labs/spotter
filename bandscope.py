@@ -103,14 +103,15 @@ class BandScope(tk.Frame):
         self._canvas.draw()
         renderer = self._canvas.get_renderer()
 
-        # Vertical decluttering: sweep spots bottom-to-top (low freq to high),
-        # enforcing a minimum pixel row height between stacked labels. Ticks
-        # always stay at the true frequency; only the text may be nudged up
-        # to clear the previous label. A leader line connects a label back
-        # to its tick whenever it's been displaced enough to matter.
+        # Vertical decluttering: place labels to clear each other with the
+        # least total displacement from their true frequency, rather than
+        # cascading a one-directional push through an entire crowded run.
+        # Ticks always stay at the true frequency; only the text may move.
+        # A leader line connects a label back to its tick whenever it's
+        # been displaced enough to matter.
         row_height_px = self._row_height_px(renderer) * _ROW_PADDING
-        last_y_disp = None
 
+        items = []
         for ts, spot in sorted(visible, key=lambda item: item[1].freq_khz):
             # x-axis is reversed (T=0 left, T=-window right; see set_xlim
             # above), so increasing data-x moves left on screen. The tick
@@ -118,12 +119,11 @@ class BandScope(tk.Frame):
             # ts - tick_sec/2 — not ts + tick_sec/2.
             tick_near_label = ts - tick_sec / 2
             x_disp, natural_y_disp = ax.transData.transform((tick_near_label, spot.freq_khz))
+            items.append((ts, spot, tick_near_label, x_disp, natural_y_disp))
 
-            y_disp = natural_y_disp
-            if last_y_disp is not None and y_disp < last_y_disp + row_height_px:
-                y_disp = last_y_disp + row_height_px
-            last_y_disp = y_disp
+        placed_y = self._declutter_y([it[4] for it in items], row_height_px)
 
+        for (ts, spot, tick_near_label, x_disp, natural_y_disp), y_disp in zip(items, placed_y):
             # gap = width of one rendered character of this label, measured
             # via actual font metrics rather than assumed — this stays
             # correct regardless of dpi/retina scaling or window/zoom level
@@ -141,6 +141,39 @@ class BandScope(tk.Frame):
                     clip_on=True, zorder=3)
 
         self._canvas.draw()
+
+    def _declutter_y(self, naturals, row_height_px):
+        """Place N ascending natural y-positions (pixel space) so consecutive
+        placements are at least row_height_px apart, minimizing total squared
+        displacement from the natural positions.
+
+        Solved as isotonic regression on values shifted by -i*row_height_px
+        (the standard reduction from a minimum-spacing constraint to a plain
+        non-decreasing one), via pool-adjacent-violators: any crowded run of
+        naturals gets merged into a single block and spread evenly around
+        the block's average position, so displacement stays bounded by the
+        run's actual spread instead of growing linearly with its length.
+        """
+        shifted = [y - i * row_height_px for i, y in enumerate(naturals)]
+
+        # each block: [sum_of_values, count, start_index, end_index]
+        blocks = []
+        for i, v in enumerate(shifted):
+            blocks.append([v, 1, i, i])
+            while len(blocks) > 1 and (
+                blocks[-2][0] / blocks[-2][1] > blocks[-1][0] / blocks[-1][1]
+            ):
+                prev = blocks.pop()
+                blocks[-1][0] += prev[0]
+                blocks[-1][1] += prev[1]
+                blocks[-1][3] = prev[3]
+
+        placed = [0.0] * len(naturals)
+        for total, weight, start, end in blocks:
+            avg = total / weight
+            for i in range(start, end + 1):
+                placed[i] = avg + i * row_height_px
+        return placed
 
     def _char_width_px(self, char, renderer):
         fp = FontProperties(size=_LABEL_FONTSIZE)
