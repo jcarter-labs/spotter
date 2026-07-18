@@ -35,6 +35,8 @@ def fmt_spot(spot: Spot) -> str:
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default=HOST)
+    parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--band", help="Band filter e.g. 20m (server-side)")
     parser.add_argument("--mode", default="CW", help="Mode filter e.g. CW SSB (server-side, default: CW)")
     parser.add_argument("--spotter-continent", help="Spotter continent e.g. NA (server-side)")
@@ -52,9 +54,9 @@ def main():
     dedup = DedupCache(window_minutes=5)
 
     q = queue.Queue()
-    conn = ClusterConnection(HOST, PORT, CALLSIGN, q, cluster_filter=cf)
+    conn = ClusterConnection(args.host, args.port, CALLSIGN, q, cluster_filter=cf)
 
-    print(f"Connecting to {HOST}:{PORT} as {CALLSIGN} ...")
+    print(f"Connecting to {args.host}:{args.port} as {CALLSIGN} ...")
     active = [f"mode={args.mode}" if args.mode else None,
               f"band={args.band}" if args.band else None,
               f"dx-continent={args.dx_continent}" if args.dx_continent else None,
