@@ -4,14 +4,16 @@ import tkinter as tk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties
-from matplotlib.ticker import FuncFormatter
 
 from scope_utils import drain_queue, extract_prefix, format_freq  # noqa: F401 (re-exported)
 
-_N_TICKS = 5
 _LABEL_FONTSIZE = 7
 _ROW_PADDING = 1.3  # multiplier on measured text height for breathing room between stacked labels
 _LEADER_THRESHOLD_PX = 1.0  # min vertical displacement before drawing a leader line
+_TICK_START = 0.02  # fixed x column (axes are frequency-only; x carries no data)
+_TICK_END = 0.06
+_REPAINT_MS = 5000  # how often to re-fade/expire spots with no new data arriving
+_FADE_FLOOR = 0.3  # alpha of a spot right at the window cutoff, just before it expires
 
 
 class BandScope(tk.Frame):
@@ -30,6 +32,18 @@ class BandScope(tk.Frame):
         self._canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self._canvas.mpl_connect("button_press_event", self._on_click)
         self._redraw()
+
+        self._after_id = self.after(_REPAINT_MS, self._tick)
+
+    def _tick(self):
+        self._redraw()
+        self._after_id = self.after(_REPAINT_MS, self._tick)
+
+    def destroy(self):
+        if self._after_id is not None:
+            self.after_cancel(self._after_id)
+            self._after_id = None
+        super().destroy()
 
     def set_center(self, freq_khz: float):
         self._center = freq_khz
@@ -53,8 +67,9 @@ class BandScope(tk.Frame):
         self._spots = [(t, s) for t, s in self._spots if t >= cutoff]
         self._redraw()
 
-    def _tick_spacing_min(self):
-        return self._window / _N_TICKS
+    def _fade_alpha(self, ts, now):
+        age_frac = (now - ts) / (self._window * 60)
+        return max(_FADE_FLOOR, 1.0 - age_frac * (1.0 - _FADE_FLOOR))
 
     def _redraw(self):
         ax = self._ax
@@ -65,36 +80,29 @@ class BandScope(tk.Frame):
         lo     = self._center - self._half
         hi     = self._center + self._half
 
-        ax.set_xlabel("min", fontsize=10)
+        # Prune expired spots here too — this runs on a timer even when no
+        # new data arrives, so this is what actually drops spots after
+        # window_minutes rather than relying on the next add_spots() call.
+        self._spots = [(t, s) for t, s in self._spots if t >= cutoff]
+
         ax.set_ylabel("Frequency (kHz)", fontsize=10)
         ax.set_title(
             f"Band Scope  {format_freq(self._center)} ± {self._half:.0f} kHz",
             fontsize=11,
         )
-        ax.set_xlim(now, cutoff)
+        ax.set_xlim(0, 1)
+        ax.set_xticks([])
         ax.set_ylim(lo, hi)
+        ax.grid(True, axis="y", alpha=0.3)
 
-        spacing_min = self._tick_spacing_min()
-        tick_times  = [now - i * spacing_min * 60 for i in range(_N_TICKS + 1)]
-        ax.set_xticks(tick_times)
-        if spacing_min >= 1:
-            fmt = FuncFormatter(lambda v, _, t=now: f"{int(round((v - t) / 60))}")
-        else:
-            fmt = FuncFormatter(lambda v, _, t=now: f"{int(round((v - t) * 60))}s")
-        ax.xaxis.set_major_formatter(fmt)
-        ax.grid(True, alpha=0.3)
-
-        # tick width = 0.8% of window so it stays visually consistent across zoom levels
-        tick_sec = self._window * 60 * 0.008
-
-        visible = [(ts, spot) for ts, spot in self._spots
-                   if lo <= spot.freq_khz <= hi and ts >= cutoff]
+        visible = [(ts, spot) for ts, spot in self._spots if lo <= spot.freq_khz <= hi]
 
         for ts, spot in visible:
-            # horizontal line exactly at the spot frequency
-            ax.hlines(spot.freq_khz,
-                      ts - tick_sec / 2, ts + tick_sec / 2,
-                      colors="navy", linewidth=2, alpha=0.85, zorder=3)
+            # horizontal line exactly at the spot frequency; older spots
+            # fade toward _FADE_FLOOR as they approach the window cutoff
+            ax.hlines(spot.freq_khz, _TICK_START, _TICK_END,
+                      colors="navy", linewidth=2,
+                      alpha=0.85 * self._fade_alpha(ts, now), zorder=3)
 
         # First draw pass: finalizes axes layout (tight_layout, axis limits)
         # and gives us a renderer. Label placement below needs both — real
@@ -108,22 +116,22 @@ class BandScope(tk.Frame):
         # cascading a one-directional push through an entire crowded run.
         # Ticks always stay at the true frequency; only the text may move.
         # A leader line connects a label back to its tick whenever it's
-        # been displaced enough to matter.
+        # been displaced enough to matter. Every spot sits at the same
+        # fixed x column (there's no time axis anymore), so a frequency
+        # gap here is a real on-screen gap — not an artifact of two spots
+        # merely being close in frequency while far apart in time.
         row_height_px = self._row_height_px(renderer) * _ROW_PADDING
 
         items = []
         for ts, spot in sorted(visible, key=lambda item: item[1].freq_khz):
-            # x-axis is reversed (T=0 left, T=-window right; see set_xlim
-            # above), so increasing data-x moves left on screen. The tick
-            # edge nearer the label is therefore the SMALLER time value,
-            # ts - tick_sec/2 — not ts + tick_sec/2.
-            tick_near_label = ts - tick_sec / 2
-            x_disp, natural_y_disp = ax.transData.transform((tick_near_label, spot.freq_khz))
-            items.append((ts, spot, tick_near_label, x_disp, natural_y_disp))
+            x_disp, natural_y_disp = ax.transData.transform((_TICK_END, spot.freq_khz))
+            items.append((ts, spot, x_disp, natural_y_disp))
 
-        placed_y = self._declutter_y([it[4] for it in items], row_height_px)
+        placed_y = self._declutter_y([it[3] for it in items], row_height_px)
 
-        for (ts, spot, tick_near_label, x_disp, natural_y_disp), y_disp in zip(items, placed_y):
+        for (ts, spot, x_disp, natural_y_disp), y_disp in zip(items, placed_y):
+            alpha = self._fade_alpha(ts, now)
+
             # gap = width of one rendered character of this label, measured
             # via actual font metrics rather than assumed — this stays
             # correct regardless of dpi/retina scaling or window/zoom level
@@ -132,11 +140,11 @@ class BandScope(tk.Frame):
 
             if abs(y_disp - natural_y_disp) > _LEADER_THRESHOLD_PX:
                 _, tick_y_data = ax.transData.inverted().transform((x_disp, natural_y_disp))
-                ax.plot([tick_near_label, x_data], [tick_y_data, y_data],
-                        color="navy", linewidth=0.6, alpha=0.5, zorder=2)
+                ax.plot([_TICK_END, x_data], [tick_y_data, y_data],
+                        color="navy", linewidth=0.6, alpha=0.5 * alpha, zorder=2)
 
             ax.text(x_data, y_data, spot.dx_call,
-                    fontsize=_LABEL_FONTSIZE, color="navy",
+                    fontsize=_LABEL_FONTSIZE, color="navy", alpha=alpha,
                     va="center", ha="left",
                     clip_on=True, zorder=3)
 
@@ -188,20 +196,19 @@ class BandScope(tk.Frame):
         return height
 
     def _on_click(self, event):
-        if event.inaxes != self._ax or event.xdata is None:
+        if event.inaxes != self._ax or event.ydata is None:
             return
         now    = time.time()
         cutoff = now - self._window * 60
-        x_range = self._window * 60 or 1
-        y_range = (2 * self._half) or 1
 
+        # There's no time axis anymore — every spot sits at the same fixed
+        # x column — so the nearest spot to a click is just the closest one
+        # in frequency.
         best, best_dist = None, float("inf")
         for ts, spot in self._spots:
             if ts < cutoff:
                 continue
-            dx = (event.xdata - ts) / x_range
-            dy = (event.ydata - spot.freq_khz) / y_range
-            d  = dx * dx + dy * dy
+            d = abs(event.ydata - spot.freq_khz)
             if d < best_dist:
                 best_dist = d
                 best = spot
