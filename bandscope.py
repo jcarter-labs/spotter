@@ -11,9 +11,18 @@ _LABEL_FONTSIZE = 7
 _ROW_PADDING = 1.3  # multiplier on measured text height for breathing room between stacked labels
 _LEADER_THRESHOLD_PX = 1.0  # min vertical displacement before drawing a leader line
 _TICK_START = 0.02  # fixed x column (axes are frequency-only; x carries no data)
-_TICK_END = 0.06
+_TICK_END = 0.03
 _REPAINT_MS = 5000  # how often to re-fade/expire spots with no new data arriving
 _FADE_FLOOR = 0.3  # alpha of a spot right at the window cutoff, just before it expires
+
+
+def fade_alpha(age_seconds, window_minutes):
+    """Alpha for a spot of the given age: 1.0 when fresh, fading toward
+    _FADE_FLOOR as it approaches the window cutoff. Shared with main.py so
+    the aging legend matches the bandmap's actual fade exactly.
+    """
+    age_frac = age_seconds / (window_minutes * 60)
+    return max(_FADE_FLOOR, 1.0 - age_frac * (1.0 - _FADE_FLOOR))
 
 
 class BandScope(tk.Frame):
@@ -24,9 +33,9 @@ class BandScope(tk.Frame):
         self._center  = center_khz
         self._half    = bandwidth_khz / 2.0
         self._window  = window_minutes
-        self._spots   = []  # list of (timestamp_float, Spot)
+        self._spots   = {}  # (dx_call, band) -> (timestamp_float, Spot); one live entry per call
 
-        self._fig = Figure(figsize=(10, 6), tight_layout=True)
+        self._fig = Figure(figsize=(1.9, 6), tight_layout=True)
         self._ax  = self._fig.add_subplot(111)
         self._canvas = FigureCanvasTkAgg(self._fig, master=self)
         self._canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -56,20 +65,20 @@ class BandScope(tk.Frame):
     def set_window(self, minutes: int):
         self._window = minutes
         cutoff = time.time() - minutes * 60
-        self._spots = [(t, s) for t, s in self._spots if t >= cutoff]
+        self._spots = {k: v for k, v in self._spots.items() if v[0] >= cutoff}
         self._redraw()
 
     def add_spots(self, spots: list):
+        # One live entry per (call, band): a re-spot refreshes its age and
+        # frequency in place rather than stacking a new row next to the old
+        # one — a station spotted repeatedly shouldn't visually multiply.
         now = time.time()
         for spot in spots:
-            self._spots.append((now, spot))
+            key = (spot.dx_call.upper(), spot.band)
+            self._spots[key] = (now, spot)
         cutoff = now - self._window * 60
-        self._spots = [(t, s) for t, s in self._spots if t >= cutoff]
+        self._spots = {k: v for k, v in self._spots.items() if v[0] >= cutoff}
         self._redraw()
-
-    def _fade_alpha(self, ts, now):
-        age_frac = (now - ts) / (self._window * 60)
-        return max(_FADE_FLOOR, 1.0 - age_frac * (1.0 - _FADE_FLOOR))
 
     def _redraw(self):
         ax = self._ax
@@ -83,26 +92,22 @@ class BandScope(tk.Frame):
         # Prune expired spots here too — this runs on a timer even when no
         # new data arrives, so this is what actually drops spots after
         # window_minutes rather than relying on the next add_spots() call.
-        self._spots = [(t, s) for t, s in self._spots if t >= cutoff]
+        self._spots = {k: v for k, v in self._spots.items() if v[0] >= cutoff}
 
         ax.set_ylabel("Frequency (kHz)", fontsize=10)
-        ax.set_title(
-            f"Band Scope  {format_freq(self._center)} ± {self._half:.0f} kHz",
-            fontsize=11,
-        )
         ax.set_xlim(0, 1)
         ax.set_xticks([])
         ax.set_ylim(lo, hi)
         ax.grid(True, axis="y", alpha=0.3)
 
-        visible = [(ts, spot) for ts, spot in self._spots if lo <= spot.freq_khz <= hi]
+        visible = [(ts, spot) for ts, spot in self._spots.values() if lo <= spot.freq_khz <= hi]
 
         for ts, spot in visible:
             # horizontal line exactly at the spot frequency; older spots
             # fade toward _FADE_FLOOR as they approach the window cutoff
             ax.hlines(spot.freq_khz, _TICK_START, _TICK_END,
                       colors="navy", linewidth=2,
-                      alpha=0.85 * self._fade_alpha(ts, now), zorder=3)
+                      alpha=0.85 * fade_alpha(now - ts, self._window), zorder=3)
 
         # First draw pass: finalizes axes layout (tight_layout, axis limits)
         # and gives us a renderer. Label placement below needs both — real
@@ -130,7 +135,7 @@ class BandScope(tk.Frame):
         placed_y = self._declutter_y([it[3] for it in items], row_height_px)
 
         for (ts, spot, x_disp, natural_y_disp), y_disp in zip(items, placed_y):
-            alpha = self._fade_alpha(ts, now)
+            alpha = fade_alpha(now - ts, self._window)
 
             # gap = width of one rendered character of this label, measured
             # via actual font metrics rather than assumed — this stays
@@ -143,10 +148,14 @@ class BandScope(tk.Frame):
                 ax.plot([_TICK_END, x_data], [tick_y_data, y_data],
                         color="navy", linewidth=0.6, alpha=0.5 * alpha, zorder=2)
 
+            # clip_on=False: an unusually long callsign may spill past the
+            # axes' right edge into the surrounding margin rather than being
+            # silently truncated — the column is sized for typical calls,
+            # not the rare long one.
             ax.text(x_data, y_data, spot.dx_call,
                     fontsize=_LABEL_FONTSIZE, color="navy", alpha=alpha,
                     va="center", ha="left",
-                    clip_on=True, zorder=3)
+                    clip_on=False, zorder=3)
 
         self._canvas.draw()
 
@@ -205,7 +214,7 @@ class BandScope(tk.Frame):
         # x column — so the nearest spot to a click is just the closest one
         # in frequency.
         best, best_dist = None, float("inf")
-        for ts, spot in self._spots:
+        for ts, spot in self._spots.values():
             if ts < cutoff:
                 continue
             d = abs(event.ydata - spot.freq_khz)
