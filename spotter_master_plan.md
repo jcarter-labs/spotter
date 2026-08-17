@@ -3,7 +3,7 @@
 
 ## Project Overview
 
-DX cluster spot monitor for macOS. Connects to a single DX cluster via
+DX cluster spot monitor for desktop (Windows, macOS, Linux). Connects to a single DX cluster via
 Telnet, displays incoming spots in a filterable list, and plots activity
 on a per-band graphical band scope. Clicking a spot sends the frequency
 to the KX3 via CAT and copies the callsign to the clipboard.
@@ -14,7 +14,7 @@ to the KX3 via CAT and copies the callsign to the clipboard.
 
 | Question | Decision |
 |---|---|
-| Platform | macOS only |
+| Platform | Desktop, cross-platform (Windows, macOS, Linux) |
 | Cluster connection | Hardcoded default, editable in config file |
 | Simultaneous clusters | One |
 | Mode filtering | CW only, always — hardcoded at server via SET/NOFT8, SET/NOFT4 |
@@ -22,26 +22,29 @@ to the KX3 via CAT and copies the callsign to the clipboard.
 | Band filtering | Server-side once CC Cluster syntax confirmed; client-side for scope window |
 | Skimmer spots | Show all, no distinction |
 | Deduplication | Suppress same callsign+band within N minutes (configurable, default 10) |
-| Band scope | Scrolling display, center freq ± configurable kHz, 10-min window |
+| Band scope | Static fixed-column frequency strip (no time axis), center freq ± configurable kHz, window 1/5/10/30 min (default 10) — see Architecture → Band Scope Behavior |
 | Click action | Send CAT to KX3 + copy callsign to clipboard (KX3 integration deferred) |
 | Settings persistence | All display + filter settings saved to ~/.config/spotter/config.json |
+| POTA spots | Public API, CW-only, filtered to live scope window, own right-edge lane (no tick/leader, no dedup, no color distinction) — see Stage 4 |
 | Definition of done | Connects, spots display, filters work, band scope shows activity, no crashes |
 
 ---
 
 ## Stack
 
-- Python 3.13, macOS, Homebrew venv (`.venv/bin/python`)
+- Python 3.13, cross-platform venv (macOS/Linux: `.venv/bin/python`; Windows: `.venv\Scripts\python.exe`)
 - `socket` + `threading` (telnet, stdlib)
 - `tkinter` + `ttk` (main window, filter panel, controls)
 - `matplotlib` via `FigureCanvasTkAgg` (band scope)
 - `re` (spot parsing)
 - `json` (config persistence)
 - `pyserial` (KX3 CAT — deferred)
+- `requests` (POTA API polling — Stage 4, **not yet installed**: `pip install requests`, and add a `requirements.txt`)
 
-Run command: `cd /Users/jc/code/spotter && .venv/bin/python main.py`
-Test command: `cd /Users/jc/code/spotter && .venv/bin/python -m unittest discover -v tests/`
-Config file:  `~/.config/spotter/config.json`
+Activate venv: macOS/Linux `source .venv/bin/activate` · Windows (PowerShell) `.venv\Scripts\Activate.ps1` · Windows (cmd) `.venv\Scripts\activate.bat`
+Run command: `python main.py` (from project root, venv activated)
+Test command: `python -m unittest discover -v tests/` (venv activated)
+Config file:  `~/.config/spotter/config.json` (resolved via `os.path.expanduser`, works on Windows too — expands under the user's home directory on all three platforms)
 
 ---
 
@@ -59,13 +62,52 @@ spotter/
   filter_panel.py    # Cluster filter settings window (Toplevel)
   scope_utils.py     # Pure helpers: format_freq, extract_prefix, drain_queue
   cluster_debug.py   # Raw handshake diagnostic tool
-  live_test.py       # 60s live integration test, CLI flags for filters
+  live_test.py       # 60s live integration test, CLI flags for filters + --host/--port
+  pota_client.py     # Stage 4 (not built): POTA API polling worker, mirrors ClusterConnection
+  live_pota_test.py  # Stage 4 (not built): live POTA smoke test + --probe schema-verification mode
   tests/
     test_cluster.py
     test_filters.py
     test_config.py
     test_ui.py
+    test_pota.py     # Stage 4 (not built): mocked-HTTP unit tests, no live network
 ```
+
+### Band Scope Behavior (current)
+
+- **Layout**: fixed-width scope column (left) + vertical toolbar (right) —
+  center-freq entry, BW dropdown (10/20/50/100 kHz), window dropdown
+  (1/5/10/30 min), Filters… button. Footer holds a two-line status block
+  (filter summary + connection) and a color-coded aging legend (2/5/10 min
+  swatches).
+- **Display model**: static fixed-column frequency strip, not a scrolling
+  time axis — every visible spot renders at the same x position, so
+  closeness in frequency is closeness on screen. Ticks (`ax.hlines`) sit at
+  the exact `spot.freq_khz`; callsign labels are vertically decluttered via
+  isotonic regression under a min-row-spacing constraint (pool-adjacent-
+  violators), with a leader line back to the tick whenever a label is
+  displaced past a small pixel threshold. Tick-to-label gap is measured
+  from real font metrics, not a fixed-points offset, so it holds up under
+  any dpi/zoom.
+- **Aging**: spots fade via alpha (full opacity when fresh, toward a floor
+  near the window cutoff) rather than moving position. A periodic
+  `self.after()` repaint (every 5s) keeps fade/expiry current even with no
+  new incoming spots. `fade_alpha()` (`bandscope.py`) is shared by the
+  footer legend so the legend swatches match the scope's actual curve.
+- **Spot identity**: keyed by `(dx_call, band)` — one live entry per
+  station. A re-spot refreshes that station's age/frequency in place
+  instead of stacking a duplicate row. (Separate from `filters.py`'s
+  `DedupCache`, which suppresses duplicate spot-list entries within N
+  minutes — dedup is enforced but no longer user-adjustable from the
+  toolbar.)
+- **Interaction**: clicking the scope copies the nearest callsign (by
+  frequency distance) to the system clipboard — precedes full KX3 CAT
+  integration (Stage 3G, deferred).
+- **Planned extension**: a second, independent spot source (POTA) is
+  specced in Stage 4 but not yet built — it will render in its own
+  right-edge lane rather than change anything described above. This
+  subsection stays accurate as the sole description of DX-cluster/RBN
+  rendering; update it (don't just append) once Stage 4 actually ships.
 
 ### Concurrency Model
 
@@ -195,8 +237,8 @@ selector using two-letter postal codes (CA, TX, OR, WA, etc.).
 ### Diagnostic commands
 
 ```bash
-cd /Users/jc/code/spotter && .venv/bin/python cluster_debug.py --probe
-cd /Users/jc/code/spotter && .venv/bin/python cluster_debug.py --interactive
+python cluster_debug.py --probe
+python cluster_debug.py --interactive
 ```
 
 ---
@@ -217,16 +259,14 @@ Server-side mode filtering (CW only) verified live. Client-side dedup working.
 
 ---
 
-### STAGE 3 — UI — IN PROGRESS (3A–3E complete, 3F remains)
+### STAGE 3 — UI — IN PROGRESS (3A–3F complete, 3G remains)
 
-#### 3A — Band Scope ✅ COMPLETE
+#### 3A — Band Scope ✅ COMPLETE (superseded by 3F — see Architecture → Band Scope Behavior for current design)
 
-- `bandscope.py`: center freq ± configurable kHz, scrolling window,
-  elapsed-time X axis (T=0 left, T=-window right), frequency Y axis
-- `main.py`: center freq entry, BW dropdown (10/20/50/100 kHz), dedup combobox,
-  Filters… button, two-line status block (filter summary + connection)
-- `scope_utils.py`: format_freq, extract_prefix, drain_queue
-- Run: `cd /Users/jc/code/spotter && .venv/bin/python main.py`
+Original delivery: `bandscope.py` (center freq ± configurable kHz), `main.py`
+controls, `scope_utils.py` (format_freq, extract_prefix, drain_queue). The
+initial design used a scrolling elapsed-time X axis and a top toolbar with a
+dedup combobox — both replaced in 3F. Run: `python main.py` (venv activated).
 
 #### 3B — Filter Panel ✅ COMPLETE
 
@@ -266,12 +306,123 @@ call-district vs state distinction (districts are not server-filterable).
   `main.py`, persisted in config) rather than a hardcoded constant
 - Click on scope copies nearest callsign to system clipboard (QRZ lookup
   prep) — precedes full KX3 CAT integration below
+- Tick-to-label gap fixed (measured font metrics, dpi/zoom-independent) and
+  overlapping labels decluttered (isotonic regression / PAV, bounded
+  leader-line length) — see Architecture → Band Scope Behavior for the
+  current mechanism.
 
-#### 3F — Deferred: KX3 Integration
+#### 3F — Static Frequency Strip, Side Toolbar, Aging Legend ✅ COMPLETE
 
-- Optional: detect `/dev/cu.usbserial-*`, instantiate RigController from kx3_logger
+Reworked 3A's scrolling time-axis band scope into the static fixed-column
+display, and 3A's top toolbar into the side-toolbar layout — done because
+the time axis let a frequency-near, time-distant spot push a label away
+from its tick even with nothing actually overlapping on screen. Full current
+behavior documented in Architecture → Band Scope Behavior (this entry is a
+changelog, not the spec). Also dropped the dedup-minutes combobox as
+redundant with the new fade-based aging display.
+
+#### 3G — Deferred: KX3 Integration
+
+- Optional: detect serial port (macOS `/dev/cu.usbserial-*`, Linux `/dev/ttyUSB*`, Windows `COM*`), instantiate RigController from kx3_logger
 - Click spot → send CAT frequency (clipboard-copy half already done in 3E)
 - No CAT error shown if KX3 not connected
+
+---
+
+### STAGE 4 — POTA Spot Integration — NOT STARTED
+
+Adds a second spot source (POTA activator spots) to the band scope, shown in
+a visually separate lane from DX-cluster/RBN spots so no new color is
+needed. This is the full spec for the feature; nothing below is built yet.
+
+#### 4A — POTA API Client
+
+- Public endpoint, no authentication required: `GET https://api.pota.app/spot/activator`
+- Poll interval: 60s, hardcoded — no config toggle for v1
+- `pota_client.py`: a `PotaConnection`-style class mirrors `ClusterConnection`
+  (`cluster.py`) — daemon thread, `start()`/`stop()`, backoff on failure
+  (5s doubling to a 60s cap), same shape as the existing telnet worker
+- Pushes normalized spots into its **own queue**, not the shared
+  `spot_queue` — drained separately in `main.py._poll()`. This is what
+  keeps POTA spots out of `DedupCache` entirely (see 4C)
+- New dependency: `requests` — **not yet installed** in `.venv` (see Stack)
+- HTTP errors, including `429 Too Many Requests`, trigger the same backoff
+  as a connection failure; no immediate retry
+- `main.py._on_close()` must stop this worker alongside `self._conn.stop()`
+- **Schema is unverified.** The field names below are from POTA's public
+  docs, not a live hit against this endpoint from this project. Per
+  "Verify external behavior before building UI" (Collaboration Rules),
+  run the `live_pota_test.py --probe` step in 4E and confirm real field
+  names/types before writing the normalizer in 4B.
+
+#### 4B — Normalization and Filtering
+
+- `Spot` (`cluster.py`) gains a `source` field (default e.g. `"DXCLUSTER"`,
+  `"POTA"` for this feed) — used only to route rendering into the correct
+  lane (4D), not for color
+- POTA JSON → `Spot`: `activator` → `dx_call`, `frequency` (string kHz) →
+  `freq_khz` (float), `band` via `cluster.detect_band()` (reused, not
+  reimplemented), `mode` uppercased and filtered to `CW` only — non-CW
+  entries dropped before reaching the queue
+- Frequency filter: current live `center_khz ± bandwidth_khz/2`, read
+  directly off `BandScope`'s existing instance attributes at filter time —
+  no added locking; a plain attribute read is treated as sufficient here
+  (KISS, not a strict correctness requirement)
+- POTA's own `expire` field is ignored — aging follows the same
+  `fade_alpha()` / `window_minutes` model as every other spot (4D)
+- POTA's `spotTime` is not used for aging — age is measured from local
+  receipt time, exactly like cluster spots, avoiding clock-skew/timezone
+  parsing bugs
+
+#### 4C — No Deduplication for POTA
+
+- `filters.DedupCache` is not applied to the POTA queue. POTA's endpoint
+  returns a live snapshot of currently-active spots on every poll (state,
+  not a discrete event stream like the telnet feed), so "suppress a
+  repeat" doesn't apply the way it does to cluster spots
+- A still-active station is simply refreshed in place by the POTA lane's
+  own spot store (4D) — the same "one live entry per station" principle
+  as the cluster lane, just without a dedup-suppression pass upstream
+
+#### 4D — Rendering: Independent Right-Edge Lane
+
+- POTA spots render in a second, independent lane on the right edge of the
+  scope, separate from the existing tick-hugging cluster/RBN lane —
+  chosen instead of a color distinction (avoids a second color and a
+  legend entry)
+- Same navy color and the same `fade_alpha()` aging curve as cluster spots
+  — lane position is the only visual differentiator
+- No tick mark and no leader line for POTA spots — plain right-justified
+  text (`ha="right"`), placed directly at the post-declutter y position;
+  frequency is conveyed by y-coordinate alone, not an exact tick
+- POTA labels get their own decluttering pass — the existing
+  `_declutter_y()` (isotonic regression / pool-adjacent-violators) is
+  reused unchanged, called a second time on the POTA-only subset. The two
+  lanes never need to coordinate with each other since they're spatially
+  disjoint
+- Storage is independent per lane (effectively keyed by
+  `(call, band, source)`, not the shared `(call, band)` key
+  `BandScope._spots` currently uses) — a station spotted via both POTA and
+  cluster/RBN in the same window renders in **both** lanes simultaneously;
+  neither evicts the other
+- `bandscope.py`'s figure widened ~40% (from `figsize=(1.9, 6)`) so both
+  lanes have room without labels meeting in the middle — an assumption
+  ("callsigns rarely fill more than half the window") to verify visually
+  once built, not proven up front
+
+#### 4E — Status and Testing
+
+- Footer gains a POTA connection status indicator, styled like the
+  existing DX-cluster status line (`self._conn_status_var` pattern)
+- `live_pota_test.py`: live smoke test against the real API (mirrors
+  `live_test.py`), plus a `--probe` mode (mirrors `cluster_debug.py
+  --probe`) — run once during development to confirm the real JSON shape
+  before the normalizer in 4B is written
+- `tests/test_pota.py`: mocked HTTP (`unittest.mock.patch("requests.get")`),
+  no live network — covers CW/band-window filtering, missing/extra JSON
+  fields tolerated without crashing, `source` tagging, and independent
+  two-lane storage (same call+band from both sources renders as two
+  entries, not one)
 
 ---
 
@@ -282,6 +433,9 @@ call-district vs state distinction (districts are not server-filterable).
 - SQLite or any database
 - Spot audio alerts
 - DX entity awards tracking (DXCC, WAS, etc.)
+- POTA/RBN spot correlation or merging (matching a POTA activation to an
+  RBN reception report) — Stage 4 renders them as independent, uncorrelated
+  lanes; purely visual side-by-side, no cross-source matching logic
 
 ---
 
@@ -290,18 +444,21 @@ call-district vs state distinction (districts are not server-filterable).
 ### Commands must always be runnable
 
 Every terminal command Claude provides must be a single line, copy-paste
-ready, and verified to work on macOS. No comment lines mixed with executable
-commands. No tools that require installation without stating so.
+ready, and verified to work in the user's actual shell on their actual
+platform (bash/zsh on macOS/Linux, PowerShell or cmd on Windows). No comment
+lines mixed with executable commands — `#` breaks a command line in
+bash/zsh/PowerShell alike. No tools that require installation without
+stating so.
 
 Example of what NOT to do:
 ```
-# Filtered (20m only):           ← zsh will try to execute this
-cd /Users/jc/code/spotter && .venv/bin/python live_test.py --band 20m
+# Filtered (20m only):           ← shell will try to execute this
+python live_test.py --band 20m
 ```
 
 Example of correct form:
 ```bash
-cd /Users/jc/code/spotter && .venv/bin/python live_test.py --band 20m
+python live_test.py --band 20m
 ```
 
 If a command requires a tool that may not be installed (e.g. telnet, gh),
@@ -339,13 +496,15 @@ syntax verification" in the commit message.
 Any new CC Cluster command must have a one-line test that can be run before
 the feature is merged:
 ```bash
-cd /Users/jc/code/spotter && .venv/bin/python cluster_debug.py --interactive
+python cluster_debug.py --interactive
 ```
 Type the command, observe the response, check SH/FILTER. If SH/FILTER does
 not reflect the change, the command did not work.
 
 ### Platform check
 
-Before recommending any CLI tool, confirm it exists on macOS without
-installation. Prefer tools in the standard macOS install: `nc`, `python3`,
-`curl`, `git`. Flag anything that requires `brew install`.
+Before recommending any CLI tool, confirm it exists on the user's platform
+without additional installation. Prefer tools available by default across
+macOS, Linux, and Windows: `python`, `git`. Flag anything that requires a
+package-manager install (Homebrew on macOS, apt on Linux, winget/choco on
+Windows) — `nc`/`curl` in particular are not guaranteed present on Windows.
