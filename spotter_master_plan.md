@@ -39,7 +39,7 @@ to the KX3 via CAT and copies the callsign to the clipboard.
 - `re` (spot parsing)
 - `json` (config persistence)
 - `pyserial` (KX3 CAT — deferred)
-- `requests` (POTA API polling — Stage 4, **not yet installed**: `pip install requests`, and add a `requirements.txt`)
+- `requests` (POTA API polling — Stage 4, installed in `.venv`. **No `requirements.txt` exists yet** — still a loose end)
 
 Activate venv: macOS/Linux `source .venv/bin/activate` · Windows (PowerShell) `.venv\Scripts\Activate.ps1` · Windows (cmd) `.venv\Scripts\activate.bat`
 Run command: `python main.py` (from project root, venv activated)
@@ -63,23 +63,24 @@ spotter/
   scope_utils.py     # Pure helpers: format_freq, extract_prefix, drain_queue
   cluster_debug.py   # Raw handshake diagnostic tool
   live_test.py       # 60s live integration test, CLI flags for filters + --host/--port
-  pota_client.py     # Stage 4 (not built): POTA API polling worker, mirrors ClusterConnection
-  live_pota_test.py  # Stage 4 (not built): live POTA smoke test + --probe schema-verification mode
+  pota_client.py     # Stage 4: POTA API polling worker (PotaConnection), mirrors ClusterConnection
+  live_pota_test.py  # Stage 4: live POTA smoke test (default) + --probe schema-verification mode
   tests/
     test_cluster.py
     test_filters.py
     test_config.py
     test_ui.py
-    test_pota.py     # Stage 4 (not built): mocked-HTTP unit tests, no live network
+    test_pota.py     # Stage 4: mocked-HTTP unit tests + one BandScope-level test, no live network
 ```
 
 ### Band Scope Behavior (current)
 
-- **Layout**: fixed-width scope column (left) + vertical toolbar (right) —
-  center-freq entry, BW dropdown (10/20/50/100 kHz), window dropdown
-  (1/5/10/30 min), Filters… button. Footer holds a two-line status block
-  (filter summary + connection) and a color-coded aging legend (2/5/10 min
-  swatches).
+- **Layout**: fixed-width scope column (left, widened ~40% for the POTA
+  lane — see below) + vertical toolbar (right) — center-freq entry, BW
+  dropdown (10/20/50/100 kHz), window dropdown (1/5/10/30 min), Filters…
+  button. Footer holds a status row (filter summary, POTA connection
+  status, DX-cluster connection status) and a color-coded aging legend
+  (2/5/10 min swatches).
 - **Display model**: static fixed-column frequency strip, not a scrolling
   time axis — every visible spot renders at the same x position, so
   closeness in frequency is closeness on screen. Ticks (`ax.hlines`) sit at
@@ -94,20 +95,29 @@ spotter/
   `self.after()` repaint (every 5s) keeps fade/expiry current even with no
   new incoming spots. `fade_alpha()` (`bandscope.py`) is shared by the
   footer legend so the legend swatches match the scope's actual curve.
-- **Spot identity**: keyed by `(dx_call, band)` — one live entry per
-  station. A re-spot refreshes that station's age/frequency in place
-  instead of stacking a duplicate row. (Separate from `filters.py`'s
-  `DedupCache`, which suppresses duplicate spot-list entries within N
-  minutes — dedup is enforced but no longer user-adjustable from the
-  toolbar.)
+- **Spot identity**: keyed by `(dx_call, band, feed)` — one live entry per
+  station per feed. A re-spot refreshes that station's age/frequency in
+  place instead of stacking a duplicate row; a station spotted via more
+  than one feed (e.g. DX-cluster/RBN *and* POTA) gets one entry per feed,
+  not one shared entry — see "POTA lane" below. (Separate from
+  `filters.py`'s `DedupCache`, which suppresses duplicate spot-list
+  entries within N minutes for the DX-cluster feed only — dedup is
+  enforced there but no longer user-adjustable from the toolbar, and is
+  not applied to POTA spots at all; see "POTA lane.")
 - **Interaction**: clicking the scope copies the nearest callsign (by
-  frequency distance) to the system clipboard — precedes full KX3 CAT
-  integration (Stage 3G, deferred).
-- **Planned extension**: a second, independent spot source (POTA) is
-  specced in Stage 4 but not yet built — it will render in its own
-  right-edge lane rather than change anything described above. This
-  subsection stays accurate as the sole description of DX-cluster/RBN
-  rendering; update it (don't just append) once Stage 4 actually ships.
+  frequency distance, across both lanes — see below) to the system
+  clipboard — precedes full KX3 CAT integration (Stage 3G, deferred).
+- **POTA lane** (Stage 4): a second, independent spot source polled from
+  the public POTA activator API (`pota_client.py`), CW-only, filtered to
+  the scope's live center/BW. Renders in its own lane on the right edge —
+  plain right-justified text, no tick mark, no leader line, its own
+  isotonic-regression decluttering pass — reusing the same navy color and
+  `fade_alpha()` aging curve as the DX-cluster/RBN lane (no second color
+  or legend entry). Backed by a separate queue and worker thread
+  (`PotaConnection`, mirrors `ClusterConnection`'s start/stop/backoff
+  shape); its spots never pass through `DedupCache`, since POTA's endpoint
+  returns a live snapshot each poll rather than a discrete event stream.
+  Full detail: Stage 4.
 
 ### Concurrency Model
 
@@ -329,11 +339,12 @@ redundant with the new fade-based aging display.
 
 ---
 
-### STAGE 4 — POTA Spot Integration — NOT STARTED
+### STAGE 4 — POTA Spot Integration ✅ COMPLETE
 
 Adds a second spot source (POTA activator spots) to the band scope, shown in
 a visually separate lane from DX-cluster/RBN spots so no new color is
-needed. This is the full spec for the feature; nothing below is built yet.
+needed. 65/65 tests pass (47 pre-existing + 18 new); verified live in the
+running app.
 
 #### 4A — POTA API Client
 
@@ -345,10 +356,19 @@ needed. This is the full spec for the feature; nothing below is built yet.
 - Pushes normalized spots into its **own queue**, not the shared
   `spot_queue` — drained separately in `main.py._poll()`. This is what
   keeps POTA spots out of `DedupCache` entirely (see 4C)
-- New dependency: `requests` — **not yet installed** in `.venv` (see Stack)
+- New dependency: `requests` — installed in `.venv` (`pip install requests`).
+  **Note:** no `requirements.txt` exists in the repo yet — still a loose end
 - HTTP errors, including `429 Too Many Requests`, trigger the same backoff
   as a connection failure; no immediate retry
-- `main.py._on_close()` must stop this worker alongside `self._conn.stop()`
+- `main.py._connect_pota()` (mirrors `_connect()`) constructs and starts the
+  worker; `main.py._on_close()` stops it alongside `self._conn.stop()`
+- `PotaConnection` takes a `window_fn` callable (`() -> (center_khz,
+  bandwidth_khz)`) rather than a `BandScope` reference — keeps
+  `pota_client.py` decoupled from `bandscope.py` (no import between them).
+  `BandScope` gained a small public `get_window_khz()` getter for this,
+  rather than `main.py`/`pota_client.py` reaching into the private
+  `_center`/`_half` attributes directly — still no locking (KISS stands),
+  just via a clean accessor instead of a private-attribute reach-in
 - **Schema verified live** via `live_pota_test.py --probe` (2026-08-16, 71
   spots returned). Confirmed: `activator`, `frequency` (string, inconsistent
   decimals e.g. `"7076"` / `"14058.0"`), `mode`, `reference`, `locationDesc`,
@@ -372,14 +392,26 @@ needed. This is the full spec for the feature; nothing below is built yet.
   `"POTA"` for this source) — used only to route rendering into the correct
   lane (4D), not for color. Named `feed` rather than `source` specifically
   to avoid colliding with POTA's own unrelated `source` JSON field (see 4A)
-- POTA JSON → `Spot`: `activator` → `dx_call`, `frequency` (string kHz) →
-  `freq_khz` (float), `band` via `cluster.detect_band()` (reused, not
-  reimplemented), `mode` uppercased and filtered to `CW` only — non-CW
-  entries dropped before reaching the queue
-- Frequency filter: current live `center_khz ± bandwidth_khz/2`, read
-  directly off `BandScope`'s existing instance attributes at filter time —
-  no added locking; a plain attribute read is treated as sufficient here
-  (KISS, not a strict correctness requirement)
+- POTA JSON → `Spot` field mapping (`pota_client.normalize_spot()`):
+  `activator` → `dx_call`, `frequency` (string kHz) → `freq_khz` (float),
+  `band` via `cluster.detect_band()` (reused, not reimplemented), `mode`
+  uppercased and filtered to `CW` only — non-CW entries dropped before
+  reaching the queue — `spotter` → `spotter` (defaults to `""` if absent),
+  `comments` → `comment` (note: POTA's field is plural, our `Spot.comment`
+  is singular), `spotTime` → `time_utc` (carried through as an opaque
+  string for display/debug only — never parsed, see below). Missing
+  required fields (`activator`/`frequency`/`mode`) or an unparseable
+  `frequency` → `None`, silently skipped, not a crash
+- `pota_client.py` split into three pure, independently testable pieces:
+  `fetch_spots()` (HTTP + JSON decode), `normalize_spot()` (one raw dict →
+  `Spot` or `None`), `filter_to_window(spots, center_khz, bandwidth_khz)`
+  (band-window filter). The window filter runs in `PotaConnection`'s poll
+  loop, not inside `fetch_spots()`/`normalize_spot()` — keeps those two
+  testable with plain JSON fixtures, no fake scope/window needed
+- Frequency filter: current live `center_khz ± bandwidth_khz/2`, read via
+  `BandScope.get_window_khz()` at filter time — no added locking; a plain
+  attribute read is treated as sufficient here (KISS, not a strict
+  correctness requirement)
 - POTA's own `expire` field is ignored — aging follows the same
   `fade_alpha()` / `window_minutes` model as every other spot (4D)
 - POTA's `spotTime` is not used for aging — age is measured from local
@@ -395,6 +427,13 @@ needed. This is the full spec for the feature; nothing below is built yet.
 - A still-active station is simply refreshed in place by the POTA lane's
   own spot store (4D) — the same "one live entry per station" principle
   as the cluster lane, just without a dedup-suppression pass upstream
+- `main.py._poll()`: cluster spots go through `DedupCache` as before; POTA
+  spots (drained from `self._pota_queue`) do not. Both lists are then
+  combined into one and passed to a single `self._scope.add_spots()` call
+  per poll tick — not two separate calls — purely to avoid two redundant
+  `_redraw()` passes when both feeds have new data in the same 200ms tick.
+  POTA spots are not added to the filter panel's spot log (cluster-only,
+  unchanged from before Stage 4)
 
 #### 4D — Rendering: Independent Right-Edge Lane
 
@@ -405,36 +444,60 @@ needed. This is the full spec for the feature; nothing below is built yet.
 - Same navy color and the same `fade_alpha()` aging curve as cluster spots
   — lane position is the only visual differentiator
 - No tick mark and no leader line for POTA spots — plain right-justified
-  text (`ha="right"`), placed directly at the post-declutter y position;
-  frequency is conveyed by y-coordinate alone, not an exact tick
+  text (`ha="right"`, anchored at `_POTA_TEXT_X = 0.97`), placed directly
+  at the post-declutter y position; frequency is conveyed by y-coordinate
+  alone, not an exact tick
 - POTA labels get their own decluttering pass — the existing
   `_declutter_y()` (isotonic regression / pool-adjacent-violators) is
   reused unchanged, called a second time on the POTA-only subset. The two
   lanes never need to coordinate with each other since they're spatially
   disjoint
-- Storage is independent per lane (effectively keyed by
-  `(call, band, feed)`, not the shared `(call, band)` key
-  `BandScope._spots` currently uses) — a station spotted via both POTA and
-  cluster/RBN in the same window renders in **both** lanes simultaneously;
-  neither evicts the other
-- `bandscope.py`'s figure widened ~40% (from `figsize=(1.9, 6)`) so both
-  lanes have room without labels meeting in the middle — an assumption
-  ("callsigns rarely fill more than half the window") to verify visually
-  once built, not proven up front
+- Storage is independent per lane: `BandScope._spots` is keyed by
+  `(dx_call, band, feed)` (changed from `(dx_call, band)` for this stage)
+  — a station spotted via both POTA and cluster/RBN in the same window
+  renders in **both** lanes simultaneously; neither evicts the other
+- `bandscope.py`'s figure widened ~40% (`figsize=(1.9, 6)` → `(2.66, 6)`)
+  so both lanes have room without labels meeting in the middle — visually
+  confirmed working with real live POTA spots after building
+- `_on_click()` is unchanged and intentionally lane-agnostic: it picks the
+  nearest spot to the click by frequency distance across **both** lanes
+  combined (`self._spots.values()`, not filtered by `feed`) and copies its
+  callsign — POTA spots are clickable exactly like cluster spots, no
+  special-casing needed since the underlying nearest-frequency logic
+  doesn't care which lane a spot renders in
 
 #### 4E — Status and Testing
 
-- Footer gains a POTA connection status indicator, styled like the
-  existing DX-cluster status line (`self._conn_status_var` pattern)
-- `live_pota_test.py`: live smoke test against the real API (mirrors
-  `live_test.py`), plus a `--probe` mode (mirrors `cluster_debug.py
-  --probe`) — run once during development to confirm the real JSON shape
-  before the normalizer in 4B is written
-- `tests/test_pota.py`: mocked HTTP (`unittest.mock.patch("requests.get")`),
-  no live network — covers CW/band-window filtering, missing/extra JSON
-  fields tolerated without crashing, `feed` tagging, and independent
-  two-lane storage (same call+band from both sources renders as two
-  entries, not one)
+- Footer gains `self._pota_status_var`, styled and positioned like the
+  existing DX-cluster status line, immediately to its left. **Known
+  limitation:** it's set once at startup (`"POTA: connecting…"` →
+  `"POTA: connected"` when the worker starts) and never updated again —
+  it does not reflect live health, so it won't show an error/backoff
+  state if the worker starts failing after startup. Acceptable for v1;
+  revisit if POTA connectivity issues turn out to be common in practice
+- `live_pota_test.py` has two modes: `--probe` (single fetch, dumps raw
+  JSON + observed field names/types — this is what verified the schema in
+  4A before the normalizer was written) and the default live mode (mirrors
+  `live_test.py`: polls `PotaConnection` and prints spots for
+  `--duration` seconds, Ctrl+C to stop early). Live mode's `--center`/`--bw`
+  default to a deliberately wide-open window (`27000`/`100000` kHz — covers
+  every HF+6m band) so the tool shows activity regardless of band without
+  requiring flags; `--poll-seconds` defaults to 60, matching production
+- `tests/test_pota.py` (18 tests, all mocked HTTP via
+  `unittest.mock.patch("pota_client.requests.get")` — no live network):
+  `TestNormalizeSpot` (CW filtering, missing/extra/malformed JSON fields
+  tolerated, POTA's own `source` field confirmed not to leak into `feed`),
+  `TestFilterToWindow` (inside/outside/boundary), `TestFetchSpots` (mixed
+  CW/non-CW, HTTP error propagation, malformed entries skipped not
+  crashed), `TestPotaConnectionPolling` (window filtering end-to-end
+  through the real thread, backoff doesn't crash the worker thread), and
+  `TestTwoLaneStorage` (a `BandScope`-level test confirming same call+band
+  from different feeds is stored as two independent entries). The last of
+  these is the first test in the suite to instantiate real Tkinter/`BandScope`
+  objects (a withdrawn `tk.Tk()` root, skipped if no display is available)
+  — every other existing test is pure-logic/mocked-I/O; noted as a
+  precedent for future GUI-adjacent test coverage, not yet a pattern
+  used elsewhere
 
 ---
 
