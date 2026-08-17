@@ -7,6 +7,7 @@ from cluster import ClusterConnection, ClusterFilter
 from config import Config
 from filter_panel import FilterPanel
 from filters import DedupCache
+from pota_client import PotaConnection
 from scope_utils import drain_queue
 
 POLL_MS         = 200
@@ -35,12 +36,15 @@ class SpotterApp(tk.Tk):
         self._config.load()
         self._spot_queue = queue.Queue()
         self._text_queue = queue.Queue()
+        self._pota_queue = queue.Queue()
         self._dedup = DedupCache(window_minutes=self._config.get("dedup_minutes", 10))
         self._conn = None
+        self._pota = None
         self._filter_panel = None
 
         self._build_ui()
         self._connect()
+        self._connect_pota()
         self._poll()
 
     # ── UI construction ──────────────────────────────────────────────────────
@@ -62,6 +66,10 @@ class SpotterApp(tk.Tk):
         self._conn_status_var = tk.StringVar(value="Connecting…")
         tk.Label(status_row, textvariable=self._conn_status_var,
                  fg="gray", font=("", 9)).pack(side=tk.RIGHT)
+
+        self._pota_status_var = tk.StringVar(value="POTA: connecting…")
+        tk.Label(status_row, textvariable=self._pota_status_var,
+                 fg="gray", font=("", 9)).pack(side=tk.RIGHT, padx=(0, 8))
 
         self._build_aging_legend(footer)
 
@@ -176,6 +184,14 @@ class SpotterApp(tk.Tk):
             self, self._conn, self._on_filter_status_change)
         self._filter_panel.withdraw()
 
+    def _connect_pota(self):
+        # Own queue, no DedupCache — POTA's feed is a live snapshot of
+        # currently-active spots each poll, not a discrete event stream, so
+        # "suppress a repeat" doesn't apply the way it does to cluster spots.
+        self._pota = PotaConnection(self._pota_queue, self._scope.get_window_khz)
+        self._pota.start()
+        self._pota_status_var.set("POTA: connected")
+
     # ── Poll loop ────────────────────────────────────────────────────────────
 
     def _poll(self):
@@ -184,11 +200,15 @@ class SpotterApp(tk.Tk):
             if not self._dedup.is_dup(spot):
                 self._dedup.record(spot)
                 new_spots.append(spot)
-        if new_spots:
-            self._scope.add_spots(new_spots)
-            if self._filter_panel is not None:
-                for spot in new_spots:
-                    self._filter_panel.append_spot_line(spot)
+
+        pota_spots = drain_queue(self._pota_queue)
+
+        combined_spots = new_spots + pota_spots
+        if combined_spots:
+            self._scope.add_spots(combined_spots)
+        if new_spots and self._filter_panel is not None:
+            for spot in new_spots:
+                self._filter_panel.append_spot_line(spot)
 
         if self._filter_panel is not None:
             try:
@@ -240,6 +260,8 @@ class SpotterApp(tk.Tk):
     def _on_close(self):
         if self._conn:
             self._conn.stop()
+        if self._pota:
+            self._pota.stop()
         self._config.save()
         self.destroy()
 

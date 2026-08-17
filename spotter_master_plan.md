@@ -349,17 +349,29 @@ needed. This is the full spec for the feature; nothing below is built yet.
 - HTTP errors, including `429 Too Many Requests`, trigger the same backoff
   as a connection failure; no immediate retry
 - `main.py._on_close()` must stop this worker alongside `self._conn.stop()`
-- **Schema is unverified.** The field names below are from POTA's public
-  docs, not a live hit against this endpoint from this project. Per
-  "Verify external behavior before building UI" (Collaboration Rules),
-  run the `live_pota_test.py --probe` step in 4E and confirm real field
-  names/types before writing the normalizer in 4B.
+- **Schema verified live** via `live_pota_test.py --probe` (2026-08-16, 71
+  spots returned). Confirmed: `activator`, `frequency` (string, inconsistent
+  decimals e.g. `"7076"` / `"14058.0"`), `mode`, `reference`, `locationDesc`,
+  `spotTime` (no timezone suffix — do not parse for aging, see 4B),
+  `expire` (int seconds, highly variable — ignored, see 4B). `parkName` is
+  usually `null`; the real park name is in `name` instead (moot for v1,
+  neither is displayed).
+- **Important: POTA's JSON has its own `source` field**, unrelated to our
+  internal feed tag — values seen include `"GT2"` (POTA's own app/web
+  spotter) and `"RBN"` (POTA's own RBN-auto-spot integration). Confirms
+  POTA's feed already blends in RBN-detected activations, separate from
+  our app's DX-cluster/RBN skimmer feed — i.e. the same call+band showing
+  up in both of our lanes is a real, expected case, not a rare edge case
+  (see 4D). To avoid colliding with POTA's own `source` field, our
+  internal per-spot tag is named `feed`, not `source` (see 4B) — this
+  field is simply not carried through from the JSON.
 
 #### 4B — Normalization and Filtering
 
-- `Spot` (`cluster.py`) gains a `source` field (default e.g. `"DXCLUSTER"`,
-  `"POTA"` for this feed) — used only to route rendering into the correct
-  lane (4D), not for color
+- `Spot` (`cluster.py`) gains a `feed` field (default e.g. `"DXCLUSTER"`,
+  `"POTA"` for this source) — used only to route rendering into the correct
+  lane (4D), not for color. Named `feed` rather than `source` specifically
+  to avoid colliding with POTA's own unrelated `source` JSON field (see 4A)
 - POTA JSON → `Spot`: `activator` → `dx_call`, `frequency` (string kHz) →
   `freq_khz` (float), `band` via `cluster.detect_band()` (reused, not
   reimplemented), `mode` uppercased and filtered to `CW` only — non-CW
@@ -401,7 +413,7 @@ needed. This is the full spec for the feature; nothing below is built yet.
   lanes never need to coordinate with each other since they're spatially
   disjoint
 - Storage is independent per lane (effectively keyed by
-  `(call, band, source)`, not the shared `(call, band)` key
+  `(call, band, feed)`, not the shared `(call, band)` key
   `BandScope._spots` currently uses) — a station spotted via both POTA and
   cluster/RBN in the same window renders in **both** lanes simultaneously;
   neither evicts the other
@@ -420,7 +432,7 @@ needed. This is the full spec for the feature; nothing below is built yet.
   before the normalizer in 4B is written
 - `tests/test_pota.py`: mocked HTTP (`unittest.mock.patch("requests.get")`),
   no live network — covers CW/band-window filtering, missing/extra JSON
-  fields tolerated without crashing, `source` tagging, and independent
+  fields tolerated without crashing, `feed` tagging, and independent
   two-lane storage (same call+band from both sources renders as two
   entries, not one)
 

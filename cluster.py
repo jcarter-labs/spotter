@@ -67,6 +67,7 @@ class Spot:
     dx_continent: str = ""
     spotter_dxcc: str = ""
     spotter_continent: str = ""
+    feed: str = "DXCLUSTER"
 
 
 def detect_band(freq_khz: float):

@@ -12,6 +12,7 @@ _ROW_PADDING = 1.3  # multiplier on measured text height for breathing room betw
 _LEADER_THRESHOLD_PX = 1.0  # min vertical displacement before drawing a leader line
 _TICK_START = 0.02  # fixed x column (axes are frequency-only; x carries no data)
 _TICK_END = 0.03
+_POTA_TEXT_X = 0.97  # right-edge anchor for the independent POTA lane (no tick/leader)
 _REPAINT_MS = 5000  # how often to re-fade/expire spots with no new data arriving
 _FADE_FLOOR = 0.3  # alpha of a spot right at the window cutoff, just before it expires
 
@@ -33,9 +34,9 @@ class BandScope(tk.Frame):
         self._center  = center_khz
         self._half    = bandwidth_khz / 2.0
         self._window  = window_minutes
-        self._spots   = {}  # (dx_call, band) -> (timestamp_float, Spot); one live entry per call
+        self._spots   = {}  # (dx_call, band, feed) -> (timestamp_float, Spot); one live entry per station per feed
 
-        self._fig = Figure(figsize=(1.9, 6), tight_layout=True)
+        self._fig = Figure(figsize=(2.66, 6), tight_layout=True)  # widened ~40% for the POTA right-edge lane
         self._ax  = self._fig.add_subplot(111)
         self._canvas = FigureCanvasTkAgg(self._fig, master=self)
         self._canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -62,6 +63,12 @@ class BandScope(tk.Frame):
         self._half = bandwidth_khz / 2.0
         self._redraw()
 
+    def get_window_khz(self):
+        """(center_khz, bandwidth_khz) -- used by PotaConnection to filter to
+        the currently displayed window without needing its own locking.
+        """
+        return self._center, self._half * 2.0
+
     def set_window(self, minutes: int):
         self._window = minutes
         cutoff = time.time() - minutes * 60
@@ -74,7 +81,7 @@ class BandScope(tk.Frame):
         # one — a station spotted repeatedly shouldn't visually multiply.
         now = time.time()
         for spot in spots:
-            key = (spot.dx_call.upper(), spot.band)
+            key = (spot.dx_call.upper(), spot.band, spot.feed)
             self._spots[key] = (now, spot)
         cutoff = now - self._window * 60
         self._spots = {k: v for k, v in self._spots.items() if v[0] >= cutoff}
@@ -101,8 +108,15 @@ class BandScope(tk.Frame):
         ax.grid(True, axis="y", alpha=0.3)
 
         visible = [(ts, spot) for ts, spot in self._spots.values() if lo <= spot.freq_khz <= hi]
+        # Two independent lanes, not merged: DX-cluster/RBN spots keep the
+        # tick+leader treatment near the left tick column; POTA spots render
+        # as plain text anchored to the right edge (see _redraw's POTA pass
+        # below). They never compete for the same screen space, so a station
+        # spotted via both feeds simply appears once in each lane.
+        cluster_visible = [(ts, spot) for ts, spot in visible if spot.feed != "POTA"]
+        pota_visible     = [(ts, spot) for ts, spot in visible if spot.feed == "POTA"]
 
-        for ts, spot in visible:
+        for ts, spot in cluster_visible:
             # horizontal line exactly at the spot frequency; older spots
             # fade toward _FADE_FLOOR as they approach the window cutoff
             ax.hlines(spot.freq_khz, _TICK_START, _TICK_END,
@@ -128,7 +142,7 @@ class BandScope(tk.Frame):
         row_height_px = self._row_height_px(renderer) * _ROW_PADDING
 
         items = []
-        for ts, spot in sorted(visible, key=lambda item: item[1].freq_khz):
+        for ts, spot in sorted(cluster_visible, key=lambda item: item[1].freq_khz):
             x_disp, natural_y_disp = ax.transData.transform((_TICK_END, spot.freq_khz))
             items.append((ts, spot, x_disp, natural_y_disp))
 
@@ -155,6 +169,26 @@ class BandScope(tk.Frame):
             ax.text(x_data, y_data, spot.dx_call,
                     fontsize=_LABEL_FONTSIZE, color="navy", alpha=alpha,
                     va="center", ha="left",
+                    clip_on=False, zorder=3)
+
+        # POTA lane: independent decluttering pass, same row height (same
+        # font size) but anchored to the right edge. No tick, no leader
+        # line — position is conveyed by y alone. Reuses _declutter_y()
+        # unchanged since it's a pure function of pixel y-positions.
+        pota_items = []
+        for ts, spot in sorted(pota_visible, key=lambda item: item[1].freq_khz):
+            x_disp, natural_y_disp = ax.transData.transform((_POTA_TEXT_X, spot.freq_khz))
+            pota_items.append((ts, spot, x_disp, natural_y_disp))
+
+        pota_placed_y = self._declutter_y([it[3] for it in pota_items], row_height_px)
+
+        for (ts, spot, x_disp, natural_y_disp), y_disp in zip(pota_items, pota_placed_y):
+            alpha = fade_alpha(now - ts, self._window)
+            _, y_data = ax.transData.inverted().transform((x_disp, y_disp))
+
+            ax.text(_POTA_TEXT_X, y_data, spot.dx_call,
+                    fontsize=_LABEL_FONTSIZE, color="navy", alpha=alpha,
+                    va="center", ha="right",
                     clip_on=False, zorder=3)
 
         self._canvas.draw()
