@@ -1,24 +1,27 @@
 """POTA API diagnostic tool.
 
-Step 1 of Stage 4 (see spotter_master_plan.md): confirm the real shape of
-https://api.pota.app/spot/activator before writing the Spot normalizer.
-
 Modes:
 
   Probe — single fetch, dump raw JSON + observed field names/types:
       python live_pota_test.py --probe
 
-  (Live polling smoke test mode arrives in Stage 4E, once the normalizer
-  and PotaConnection worker exist.)
+  Live — poll PotaConnection and print spots as they arrive (default):
+      python live_pota_test.py
+      python live_pota_test.py --center 14025 --bw 50 --duration 120
 """
 
 import argparse
 import json
+import queue
+import signal
 import sys
+import time
 
 import requests
 
-POTA_URL = "https://api.pota.app/spot/activator"
+from cluster import Spot
+from pota_client import POTA_URL, PotaConnection
+
 TIMEOUT_S = 10
 
 
@@ -72,16 +75,66 @@ def mode_probe():
     print(f"\nCW-mode spots: {cw_count} / {len(spots)}")
 
 
+def fmt_spot(spot: Spot) -> str:
+    return (
+        f"{spot.time_utc:<20} {spot.dx_call:<12} {spot.freq_khz:>9.1f} kHz  "
+        f"{spot.band:<4}  {spot.mode:<4}  de {spot.spotter:<12}  {spot.comment}"
+    )
+
+
+def mode_live(args):
+    window = (args.center, args.bw)
+    q = queue.Queue()
+    conn = PotaConnection(q, window_fn=lambda: window, poll_seconds=args.poll_seconds)
+
+    lo, hi = args.center - args.bw / 2, args.center + args.bw / 2
+    print(f"Polling {POTA_URL} every {args.poll_seconds}s ...")
+    print(f"Window: {lo:.1f}-{hi:.1f} kHz, CW only")
+    print(f"Running for {args.duration}s — Ctrl+C to stop\n")
+    print(f"{'SPOT TIME':<20} {'DX CALL':<12} {'FREQ':>13}  {'BAND':<4}  {'MODE':<4}  {'SPOTTER':<14}  COMMENT")
+    print("-" * 100)
+
+    conn.start()
+
+    def shutdown(sig, frame):
+        conn.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown)
+
+    count = 0
+    deadline = time.monotonic() + args.duration
+    while time.monotonic() < deadline:
+        try:
+            spot = q.get(timeout=0.5)
+            count += 1
+            print(fmt_spot(spot))
+        except queue.Empty:
+            pass
+
+    conn.stop()
+    print(f"\n{'-' * 100}")
+    print(f"Done. Received {count} spots.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="POTA API diagnostic tool")
     parser.add_argument("--probe", action="store_true",
                         help="Fetch once, dump raw JSON and observed schema")
+    parser.add_argument("--center", type=float, default=27000.0,
+                        help="Live mode: scope center kHz (default: wide open, all HF+6m bands)")
+    parser.add_argument("--bw", type=float, default=100000.0,
+                        help="Live mode: scope bandwidth kHz")
+    parser.add_argument("--duration", type=int, default=60,
+                        help="Live mode: run duration in seconds")
+    parser.add_argument("--poll-seconds", type=int, default=60,
+                        help="Live mode: poll interval in seconds")
     args = parser.parse_args()
 
     if args.probe:
         mode_probe()
     else:
-        parser.print_help()
+        mode_live(args)
 
 
 if __name__ == "__main__":
