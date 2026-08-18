@@ -490,7 +490,10 @@ running app.
   `TestFilterToWindow` (inside/outside/boundary), `TestFetchSpots` (mixed
   CW/non-CW, HTTP error propagation, malformed entries skipped not
   crashed), `TestPotaConnectionPolling` (window filtering end-to-end
-  through the real thread, backoff doesn't crash the worker thread), and
+  through the real thread; **only asserts that a fetch failure doesn't
+  crash the worker thread — the 5s-doubling-to-60s-cap backoff timing
+  itself is not asserted by any test**, matching 4A's spec but unverified
+  by suite), and
   `TestTwoLaneStorage` (a `BandScope`-level test confirming same call+band
   from different feeds is stored as two independent entries). The last of
   these is the first test in the suite to instantiate real Tkinter/`BandScope`
@@ -498,6 +501,15 @@ running app.
   — every other existing test is pure-logic/mocked-I/O; noted as a
   precedent for future GUI-adjacent test coverage, not yet a pattern
   used elsewhere
+- **`main.py` wiring has no automated test** — `_connect_pota()`, the
+  combined `add_spots()` call in `_poll()`, and `_on_close()` stopping both
+  workers are only covered by manual full-app runs, not `unittest`.
+  Manually smoke-tested twice: once mid-build (confirmed the right-edge
+  lane rendering with a real live POTA spot), and again after the Stage 4
+  commits were pushed (confirmed both status indicators read "connected,"
+  cluster spots on the left lane and POTA spots on the right lane
+  simultaneously, and a clean shutdown — exit code 0, both workers stopped
+  without hanging)
 
 ---
 
